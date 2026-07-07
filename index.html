@@ -84,6 +84,12 @@ body{font-family:-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:
 .user-avatar{width:28px;height:28px;border-radius:50%;background:var(--surf3);border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700;color:var(--accent);}
 .logout-btn{padding:4px 11px;font-size:.73rem;background:var(--surf3);border:1px solid var(--border2);border-radius:6px;color:var(--muted);cursor:pointer;}
 .logout-btn:hover{color:var(--warn);border-color:var(--warn);}
+
+.toast{position:fixed;bottom:24px;right:calc(var(--sidebar-w)+16px);background:var(--surf);
+  border:1px solid var(--border);border-radius:8px;padding:10px 16px;font-size:.8rem;
+  box-shadow:var(--sh);z-index:500;transition:opacity .3s;display:flex;align-items:center;gap:8px;}
+.toast.ok{border-color:rgba(38,198,106,.4);color:var(--ok);}
+.toast.err{border-color:rgba(239,83,80,.4);color:var(--warn);}
 .sched-inp{background:var(--surf3);border:1px solid var(--border2);border-radius:5px;
   padding:3px 8px;color:var(--accent);font-size:.72rem;font-family:var(--mono);outline:none;
   width:96px;transition:border-color .15s;letter-spacing:.04em;}
@@ -302,9 +308,9 @@ table.stat-log tr:last-child td{border-bottom:none;}
 // Settings → API
 // ═══════════════════════════════════════════════════════════
 const CONFIG = {
-  SUPABASE_URL:         'https://vfzhvlnzdibzbcrzemia.supabase.co',
-  SUPABASE_ANON_KEY:    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZmemh2bG56ZGliemJjcnplbWlhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0MTg2ODAsImV4cCI6MjA5ODk5NDY4MH0.A6D4s2HM9D6lJKKfw3jL5HYf9qRV2ep_IZYVLxZWsh0',
-  SUPABASE_SERVICE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZmemh2bG56ZGliemJjcnplbWlhIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MzQxODY4MCwiZXhwIjoyMDk4OTk0NjgwfQ.3DpFN5LugPfduO6beekSrO_WwqgIRn2wKIgELrV9Qmg'
+  SUPABASE_URL:         'https://YOUR_PROJECT.supabase.co',
+  SUPABASE_ANON_KEY:    'YOUR_ANON_KEY',
+  SUPABASE_SERVICE_KEY: 'YOUR_SERVICE_ROLE_KEY'
 };
 
 let sb      = null;   // Supabase client (anon)
@@ -1245,6 +1251,13 @@ function authShowLogin(){
   document.getElementById('auth-reg-form').style.display='none';
   document.getElementById('auth-sub').textContent='Debitare Laser — Autentificare';
 }
+
+function showToast(msg,type='ok',ms=3000){
+  let t=document.getElementById('app-toast');
+  if(!t){t=document.createElement('div');t.id='app-toast';document.body.appendChild(t);}
+  t.className='toast '+type;t.innerHTML=(type==='ok'?'✓ ':'⚠ ')+msg;t.style.opacity='1';
+  clearTimeout(t._tid);t._tid=setTimeout(()=>t.style.opacity='0',ms);
+}
 function showAuthErr(msg){const el=document.getElementById('auth-err');el.textContent=msg;el.classList.add('show');}
 function hideAuthErr(){document.getElementById('auth-err').classList.remove('show');}
 
@@ -1342,6 +1355,14 @@ async function loadAllData(){
     if(od) od.forEach(d=>{opData[d.op_key]={coliDebitate:String(d.coli_debitate||''),motivDepasire:d.motiv_depasire||'',numOfSheetOverride:d.num_sheet_override||null,completedAt:d.completed_at||null};});
     const{data:sl}=await sb.from('stock_locations').select('*').order('sort_order');
     if(sl) stockLocations=sl;
+
+    // Stock records – încarcă ultimul import din DB
+    const{data:sr}=await sb.from('stock_records').select('*').order('imported_at',{ascending:false}).limit(2000);
+    if(sr&&sr.length){
+      stockRecords=sr.map(r=>({data:r.data}));
+      if(stockRecords[0]?.data) stockHeaders=Object.keys(stockRecords[0].data);
+    }
+
     refreshStats();updateTabCounts();
     renderNesturi();
     if(activeTab==='picking') renderPicking();
@@ -1375,18 +1396,22 @@ async function saveNestToSupabase(source,programs){
   const payload={source,machine:first?.machine||'',job_name:first?.nestName||source,
     schedule_no:getSchedNo(source),priority:getPriority(source),
     programs:progsCleaned,imported_by:currentUser.id};
-  await sb.from('nests').upsert(payload,{onConflict:'source'});
+  const{error}=await sb.from('nests').upsert(payload,{onConflict:'source'});
+  if(error) console.warn('saveNest error:',error.message,'– payload source:',source);
 }
+
 
 async function savePickingToSupabase(key){
   if(!sb||!currentUser) return;
   const d=pickingData[key];if(!d) return;
-  await sb.from('picking_data').upsert({
+  const{error:pe}=await sb.from('picking_data').upsert({
     sheet_key:key,sheet_code:d.sheetCode||'',reserved_qty:parseInt(d.reservedQty)||0,
     reserved_at:d.reservedAt||null,surplus_motiv:d.surplusMotiv||'',
     reserved_by:currentUser.id,updated_at:new Date().toISOString()
   },{onConflict:'sheet_key'});
+  if(pe) console.warn('savePicking error:',pe.message);
 }
+
 
 async function deleteNestFromSupabase(source){
   if(!sb) return;
@@ -1504,7 +1529,16 @@ async function importStockFile(file){
   const ext=file.name.split('.').pop().toLowerCase();
   let rows=[],headers=[];
   if(['xlsx','xls','xlsm'].includes(ext)){
-    if(typeof XLSX==='undefined'){alert('Biblioteca SheetJS nu este disponibilă.');return;}
+    // Dacă SheetJS nu a fost încărcat, îl încarcă dinamic
+    if(typeof XLSX==='undefined'){
+      try{
+        await new Promise((res,rej)=>{
+          const s=document.createElement('script');
+          s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+          s.onload=res;s.onerror=rej;document.head.appendChild(s);
+        });
+      }catch(e){alert('Nu s-a putut încărca biblioteca Excel. Verifică conexiunea la internet.');return;}
+    }
     const ab=await file.arrayBuffer();
     const wb=XLSX.read(ab,{type:'array'});
     const ws=wb.Sheets[wb.SheetNames[0]];
@@ -1544,6 +1578,7 @@ async function importStockFile(file){
     }
   }
   renderStocuri();
+  showToast(filtered.length+' înregistrări importate din '+file.name);
 }
 
 // ── Render Stocuri ──
@@ -1597,6 +1632,112 @@ function renderStocuri(){
     `:'<div class="empty-state" style="padding:24px"><div class="et">Importă un fișier Excel (.xlsx) sau CSV filtrat pe locații.</div></div>'}`;
 }
 
+// ══════════════════════════════════════════════════
+// INTERCEPTORI SUPABASE – salvează TOATE modificările
+// ══════════════════════════════════════════════════
+
+// ── saveOpToSupabase ──
+async function saveOpToSupabase(key){
+  if(!sb||!currentUser||!key) return;
+  const d=opData[key];if(!d) return;
+  await sb.from('operational_data').upsert({
+    op_key:key,
+    coli_debitate:parseInt(d.coliDebitate)||0,
+    motiv_depasire:d.motivDepasire||'',
+    num_sheet_override:d.numOfSheetOverride||null,
+    completed_at:d.completedAt||null,
+    updated_by:currentUser.id,
+    updated_at:new Date().toISOString()
+  },{onConflict:'op_key'});
+}
+
+// ── 1. pkRes — salveaza cantitatea rezervată ──
+const _origPkRes=pkRes;
+pkRes=function(el){
+  _origPkRes(el);
+  savePickingToSupabase(el.dataset.key);
+};
+
+// ── 2. surplusConfirm — salveaza motivul suprarezervare ──
+const _origSurplusConfirm=surplusConfirm;
+surplusConfirm=async function(){
+  const key=surplusPending?.key; // capturează înainte ca originalul să șteargă
+  _origSurplusConfirm();
+  if(key) await savePickingToSupabase(key);
+};
+
+// ── 3. rapDebInput — salveaza coli debitate ──
+const _origRapDebInput=rapDebInput;
+rapDebInput=function(el){
+  _origRapDebInput(el);
+  const ok=el.dataset.ok;
+  if(ok) saveOpToSupabase(ok);
+};
+
+// ── 4. ocConfirm — salveaza motiv depășire + coli debitate ──
+const _origOcConfirm=ocConfirm;
+ocConfirm=async function(){
+  const ok=ocPending?.ok;
+  _origOcConfirm();
+  if(ok) await saveOpToSupabase(ok);
+};
+
+// ── 5. rapNecInput — salveaza override numOfSheet ──
+const _origRapNecInput=rapNecInput;
+rapNecInput=function(el){
+  _origRapNecInput(el);
+  const ok=el.dataset.ok;
+  if(ok) saveOpToSupabase(ok);
+};
+
+// ── 6. scheduleInput — salveaza schedule_no în nests ──
+const _origScheduleInput=scheduleInput;
+scheduleInput=async function(el,src){
+  _origScheduleInput(el,src);
+  if(sb&&currentUser&&src){
+    await sb.from('nests').update({schedule_no:el.value}).eq('source',src);
+  }
+};
+
+// ── 7. setPriority — salveaza priority în nests ──
+const _origSetPriority=setPriority;
+setPriority=async function(src,val){
+  _origSetPriority(src,val);
+  if(sb&&currentUser&&src){
+    await sb.from('nests').update({priority:parseInt(val)||0}).eq('source',src);
+  }
+};
+
+// ── 8. schedConfirm — salveaza schedule_no după prompt ──
+const _origSchedConfirm=schedConfirm;
+schedConfirm=async function(){
+  const src=schedQueue[0];
+  const val=document.getElementById('sched-inp-modal')?.value||'';
+  _origSchedConfirm();
+  if(sb&&currentUser&&src){
+    await sb.from('nests').update({schedule_no:val}).eq('source',src);
+  }
+};
+
+// ── 9. addStockLocation / removeStockLocation — deja în funcțiile Supabase ──
+
+// ── 10. Stationari log – salveaza evenimentele în DB ──
+const _origStatStop=statStop;
+statStop=async function(){
+  const ev=stat.active?{...stat.active}:null;
+  _origStatStop();
+  if(ev&&sb&&currentUser){
+    await sb.from('stationari_log').insert({
+      stat_type:ev.type,label:ev.label||'',icon:ev.icon||'',
+      description:ev.desc||'',
+      start_time:new Date(ev.startTime).toISOString(),
+      end_time:new Date().toISOString(),
+      duration:Date.now()-ev.startTime,
+      logged_by:currentUser.id
+    });
+  }
+};
+
 // ── Override tab switch ──
 const _origSwitchTab=switchTab;
 switchTab=function(tab){_origSwitchTab(tab);if(tab==='stocuri') renderStocuri();if(tab==='utilizatori') renderUtilizatori();};
@@ -1606,7 +1747,10 @@ const _origDoPost=doPostLoadRender;
 doPostLoadRender=async function(){
   _origDoPost();
   const sources=[...new Set(allPrograms.map(p=>p.source))];
-  for(const src of sources){await saveNestToSupabase(src,allPrograms.filter(p=>p.source===src));}
+  let saveOk=true;
+  for(const src of sources){try{await saveNestToSupabase(src,allPrograms.filter(p=>p.source===src));}catch(e){saveOk=false;console.warn(e);}}
+  if(saveOk) showToast('Nesturi salvate în Supabase');
+  else showToast('Eroare la salvare în Supabase','err');
 };
 
 // ── Override deleteNest ──
