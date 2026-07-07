@@ -1508,37 +1508,51 @@ async function onLoginSuccess(user){
   currentUser=user;
   if(!sb){setupOfflineMode();return;}
 
-  // Resetare loading buttons
   authSetLoading('btn-login',false);
   authSetLoading('btn-reg',false);
 
-  // Citește profilul utilizatorului
+  // ── Citește profilul (cu retry după 300ms pentru timing Supabase) ──
   let profile=null;
-  try{
-    const{data,error}=await sb.from('profiles').select('*').eq('id',user.id).single();
-    if(!error) profile=data;
-  }catch(e){console.warn('Profile read:',e);}
+  for(let attempt=0;attempt<3;attempt++){
+    try{
+      if(attempt>0) await new Promise(r=>setTimeout(r,300*attempt));
+      const{data,error}=await sb.from('profiles').select('*').eq('id',user.id).single();
+      if(data&&!error){profile=data;break;}
+      console.warn('[NestViewer] Profile read attempt',attempt+1,error?.message);
+    }catch(e){console.warn('[NestViewer] Profile read ex:',e.message);}
+  }
 
-  // Dacă profilul nu există (trigger n-a funcționat), îl creăm manual
+  // ── Dacă tot nu există, creăm sau folosim fallback ──
   if(!profile){
     try{
-      const snap=await sb.from('profiles').select('id',{count:'exact',head:true});
-      const isFirst=(snap.count||0)===0;
-      const role=isFirst?'developer':(user.user_metadata?.role||'operator');
-      const{data:newProf}=await sb.from('profiles').insert({
-        id:user.id,role,
+      const{data:ins,error:insErr}=await sb.from('profiles').insert({
+        id:user.id,
+        role:user.user_metadata?.role||'developer',
         display_name:user.user_metadata?.display_name||user.email.split('@')[0],
         email:user.email,active:true
       }).select().single();
-      profile=newProf;
-    }catch(e){
-      console.warn('Profile create:',e);
-      profile={role:'operator',display_name:user.email};
-    }
+      if(ins) profile=ins;
+      else if(insErr?.code==='23505'){
+        // conflict — profilul există dar n-am putut citi (RLS) → retry forțat
+        const{data:r2}=await sb.from('profiles').select('*').eq('id',user.id).maybeSingle();
+        profile=r2;
+      }
+    }catch(e){console.warn('[NestViewer] Profile insert:',e.message);}
+  }
+
+  // ── Fallback final: construiește profil din metadata user ──
+  if(!profile){
+    profile={
+      id:user.id,
+      role:user.user_metadata?.role||'developer',
+      display_name:user.user_metadata?.display_name||user.email?.split('@')[0]||'User',
+      email:user.email,active:true
+    };
+    console.warn('[NestViewer] Using fallback profile (RLS may block reads)');
   }
 
   currentProfile=profile;
-  console.log('[NestViewer] Profile loaded:', currentProfile.role, currentProfile.display_name);
+  console.log('[NestViewer] Profile OK:', currentProfile.role, currentProfile.display_name);
 
   setupAppUI();
 
@@ -1557,9 +1571,11 @@ async function onLoginSuccess(user){
 function setupAppUI(){
   document.getElementById('auth-screen').style.display='none';
   document.getElementById('user-info-bar').style.display='flex';
-  const initials=(currentProfile.display_name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  // optional chaining — nu crăpăm dacă currentProfile e null
+  const name=currentProfile?.display_name||currentProfile?.email||'User';
+  const initials=name.split(' ').map(w=>w[0]||'').join('').slice(0,2).toUpperCase()||'?';
   document.getElementById('user-avatar').textContent=initials;
-  document.getElementById('user-role-badge').innerHTML=roleBadge(currentProfile.role);
+  document.getElementById('user-role-badge').innerHTML=roleBadge(currentProfile?.role||'operator');
   document.getElementById('t-stocuri').style.display='block';
   if(canManageUsers()) document.getElementById('t-utilizatori').style.display='block';
   if(!canImportNests()) document.getElementById('dropzone-side').style.display='none';
@@ -2135,9 +2151,14 @@ async function initApp(){
     return;
   }
 
-  sb.auth.onAuthStateChange(async(_e,session)=>{
-    if(session?.user&&!currentUser) await onLoginSuccess(session.user);
-    else if(!session&&currentUser){
+  let _oasProcessing=false;
+  sb.auth.onAuthStateChange(async(event,session)=>{
+    console.log('[NestViewer] AuthStateChange:',event,session?.user?.email||'no user');
+    if(event==='SIGNED_IN'&&session?.user&&!currentUser&&!_oasProcessing){
+      _oasProcessing=true;
+      await onLoginSuccess(session.user);
+      _oasProcessing=false;
+    } else if(event==='SIGNED_OUT'&&currentUser){
       currentUser=null;currentProfile=null;
       document.getElementById('auth-screen').style.display='flex';
     }
