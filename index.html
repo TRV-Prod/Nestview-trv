@@ -90,6 +90,42 @@ body{font-family:-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:
   box-shadow:var(--sh);z-index:500;transition:opacity .3s;display:flex;align-items:center;gap:8px;}
 .toast.ok{border-color:rgba(38,198,106,.4);color:var(--ok);}
 .toast.err{border-color:rgba(239,83,80,.4);color:var(--warn);}
+
+/* ── Config wizard ── */
+#config-screen{position:fixed;inset:0;background:var(--bg);z-index:2000;display:none;
+  align-items:center;justify-content:center;padding:20px;overflow-y:auto;}
+.cfg-box{background:var(--surf);border:1px solid var(--border);border-radius:var(--r);
+  padding:36px 32px;max-width:520px;width:100%;box-shadow:var(--sh);}
+.cfg-step{display:flex;align-items:center;gap:10px;margin-bottom:22px;}
+.cfg-step-num{width:28px;height:28px;border-radius:50%;background:var(--accent);color:#000;
+  font-size:.78rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.cfg-step-text{font-size:.82rem;color:var(--muted);line-height:1.5;}
+.cfg-step-text strong{color:var(--text);}
+.cfg-step-text a{color:var(--accent);text-decoration:underline;text-underline-offset:3px;}
+.cfg-field{margin-bottom:14px;}
+.cfg-field label{display:block;font-size:.71rem;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.06em;margin-bottom:5px;}
+.cfg-field label span{color:var(--warn);margin-left:3px;}
+.cfg-field label em{color:var(--dim);font-style:normal;font-size:.66rem;text-transform:none;letter-spacing:0}
+.cfg-inp{width:100%;background:var(--surf2);border:1px solid var(--border2);border-radius:7px;
+  padding:9px 13px;color:var(--text);font-size:.82rem;font-family:var(--mono);outline:none;
+  transition:border-color .15s;letter-spacing:.03em;}
+.cfg-inp:focus{border-color:var(--accent);}
+.cfg-inp.valid{border-color:var(--ok);}
+.cfg-inp.invalid{border-color:var(--warn);}
+.cfg-hint{font-size:.7rem;color:var(--dim);margin-top:4px;line-height:1.4;}
+.cfg-err{background:rgba(239,83,80,.1);color:var(--warn);border:1px solid rgba(239,83,80,.3);
+  border-radius:6px;padding:8px 12px;font-size:.78rem;margin-bottom:12px;display:none;}
+.cfg-err.show{display:block;}
+.cfg-divider{border:none;border-top:1px solid var(--border);margin:18px 0;}
+.cfg-recfg{text-align:center;margin-top:12px;font-size:.73rem;color:var(--dim);}
+.cfg-recfg a{color:var(--muted);cursor:pointer;text-decoration:underline;}
+.cfg-test{display:flex;align-items:center;gap:8px;margin-bottom:14px;}
+.cfg-test-btn{padding:6px 14px;font-size:.76rem;font-weight:600;border-radius:6px;
+  border:1px solid var(--border2);background:var(--surf2);color:var(--muted);cursor:pointer;
+  transition:all .15s;white-space:nowrap;}
+.cfg-test-btn:hover{border-color:var(--accent);color:var(--accent);}
+.cfg-test-result{font-size:.74rem;font-family:var(--mono);}
 .sched-inp{background:var(--surf3);border:1px solid var(--border2);border-radius:5px;
   padding:3px 8px;color:var(--accent);font-size:.72rem;font-family:var(--mono);outline:none;
   width:96px;transition:border-color .15s;letter-spacing:.04em;}
@@ -308,9 +344,9 @@ table.stat-log tr:last-child td{border-bottom:none;}
 // Settings → API
 // ═══════════════════════════════════════════════════════════
 const CONFIG = {
-  SUPABASE_URL:         'https://vfzhvlnzdibzbcrzemia.supabase.co',
-  SUPABASE_ANON_KEY:    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZmemh2bG56ZGliemJjcnplbWlhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0MTg2ODAsImV4cCI6MjA5ODk5NDY4MH0.A6D4s2HM9D6lJKKfw3jL5HYf9qRV2ep_IZYVLxZWsh0',
-  SUPABASE_SERVICE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZmemh2bG56ZGliemJjcnplbWlhIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MzQxODY4MCwiZXhwIjoyMDk4OTk0NjgwfQ.3DpFN5LugPfduO6beekSrO_WwqgIRn2wKIgELrV9Qmg'
+  SUPABASE_URL:         'https://YOUR_PROJECT.supabase.co',
+  SUPABASE_ANON_KEY:    'YOUR_ANON_KEY',
+  SUPABASE_SERVICE_KEY: 'YOUR_SERVICE_ROLE_KEY'
 };
 
 let sb      = null;   // Supabase client (anon)
@@ -319,13 +355,40 @@ let currentUser    = null;
 let currentProfile = null;
 let _realtimeSubs  = []; // subscriptions actuale
 
+// ── Config din localStorage (prioritate față de CONFIG hardcodat) ──
+const LS = {
+  url:     'nv_sb_url',
+  anon:    'nv_sb_anon',
+  service: 'nv_sb_service'
+};
+
+function loadLocalConfig(){
+  return {
+    url:     localStorage.getItem(LS.url)     || CONFIG.SUPABASE_URL,
+    anon:    localStorage.getItem(LS.anon)    || CONFIG.SUPABASE_ANON_KEY,
+    service: localStorage.getItem(LS.service) || CONFIG.SUPABASE_SERVICE_KEY
+  };
+}
+
+function isPlaceholder(v){ return !v||v.startsWith('YOUR_')||v.includes('YOUR_PROJECT'); }
+
+function isConfigValid(cfg){
+  return cfg.url && !isPlaceholder(cfg.url) && cfg.anon && !isPlaceholder(cfg.anon);
+}
+
+function initSupabaseWith(url, anon, service){
+  try{
+    sb      = window.supabase.createClient(url, anon);
+    sbAdmin = service && !isPlaceholder(service)
+                ? window.supabase.createClient(url, service)
+                : null;
+    return true;
+  }catch(e){console.warn('Supabase init:',e.message);return false;}
+}
+
 function initSupabase(){
-  try {
-    sb      = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
-    sbAdmin = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_SERVICE_KEY);
-  } catch(e) {
-    console.warn('Supabase init failed – offline mode:', e.message);
-  }
+  const cfg = loadLocalConfig();
+  if(isConfigValid(cfg)) initSupabaseWith(cfg.url, cfg.anon, cfg.service);
 }
 </script>
 </head>
@@ -374,6 +437,76 @@ function initSupabase(){
 </div>
 
 
+<!-- ══ CONFIG WIZARD ══ -->
+<div id="config-screen">
+  <div class="cfg-box">
+    <div class="auth-logo" style="margin-bottom:16px"><div class="al">⬛</div></div>
+    <div class="auth-title" style="margin-bottom:4px">Configurare Supabase</div>
+    <div class="auth-sub" style="margin-bottom:24px">
+      Configurarea se salvează <strong>local pe acest dispozitiv</strong>.<br>
+      Fiecare device nou necesită această setare o singură dată.
+    </div>
+
+    <!-- Pas 1 -->
+    <div class="cfg-step">
+      <div class="cfg-step-num">1</div>
+      <div class="cfg-step-text">
+        Deschide <a href="https://supabase.com/dashboard" target="_blank">supabase.com/dashboard</a>
+        → proiectul tău → <strong>Settings → API</strong>
+      </div>
+    </div>
+
+    <div class="cfg-err" id="cfg-err"></div>
+
+    <div class="cfg-field">
+      <label>URL Proiect <span>*</span></label>
+      <input class="cfg-inp" id="cfg-url" type="url"
+             placeholder="https://xxxx.supabase.co"
+             oninput="cfgValidate(this,'url')">
+      <div class="cfg-hint">Găsești la: Settings → API → Project URL</div>
+    </div>
+
+    <div class="cfg-field">
+      <label>Anon Key (public) <span>*</span></label>
+      <input class="cfg-inp" id="cfg-anon" type="text"
+             placeholder="eyJhbGciOiJIUzI1Ni..."
+             oninput="cfgValidate(this,'key')">
+      <div class="cfg-hint">Găsești la: Settings → API → <em>anon public</em> key</div>
+    </div>
+
+    <hr class="cfg-divider">
+
+    <!-- Pas 2 - optional -->
+    <div class="cfg-step">
+      <div class="cfg-step-num">2</div>
+      <div class="cfg-step-text">
+        <strong>Opțional</strong> — Service Role Key (necesar doar pentru
+        <strong>Developer/Admin</strong> la gestionarea utilizatorilor)
+      </div>
+    </div>
+
+    <div class="cfg-field">
+      <label>Service Role Key <em>— opțional</em></label>
+      <input class="cfg-inp" id="cfg-service" type="password"
+             placeholder="eyJhbGciOiJIUzI1Ni... (lasă gol dacă ești Operator sau Picker)"
+             oninput="cfgValidate(this,'key')">
+      <div class="cfg-hint">Găsești la: Settings → API → <em>service_role</em> key · Nu îl distribui!</div>
+    </div>
+
+    <div class="cfg-test">
+      <button class="cfg-test-btn" onclick="cfgTest()">🔌 Testează conexiunea</button>
+      <span class="cfg-test-result" id="cfg-test-result"></span>
+    </div>
+
+    <button class="auth-btn" onclick="saveConfig()">Salvează și continuă →</button>
+
+    <div class="cfg-recfg" style="margin-top:16px;font-size:.71rem;color:var(--dim)">
+      Configurarea se poate modifica oricând din meniul de Login.
+    </div>
+  </div>
+</div>
+
+
 <!-- ══ AUTH SCREEN ══ -->
 <div id="auth-screen">
   <div class="auth-box">
@@ -386,6 +519,9 @@ function initSupabase(){
       <input type="password" class="auth-inp" id="auth-pass" placeholder="Parolă" autocomplete="current-password">
       <button class="auth-btn" onclick="authLogin()">Intră în aplicație</button>
       <div class="auth-toggle">Nu ai cont? <a onclick="authShowRegister()">Prima configurare</a></div>
+    <div class="auth-toggle" style="margin-top:6px">
+      <a onclick="showConfigScreen()" style="font-size:.7rem;color:var(--dim)">⚙ Schimbă server Supabase</a>
+    </div>
     </div>
     <div id="auth-reg-form" style="display:none">
       <input type="text" class="auth-inp" id="reg-name" placeholder="Nume afișat (ex: Dev)">
@@ -1766,12 +1902,130 @@ deleteNest=function(src){
   deleteNestFromSupabase(src);
 };
 
+
+// ══ CONFIG WIZARD FUNCTIONS ══
+
+function cfgValidate(inp, type){
+  const v=inp.value.trim();
+  if(type==='url'){
+    inp.classList.toggle('valid', v.includes('supabase.co'));
+    inp.classList.toggle('invalid', v.length>10 && !v.includes('supabase'));
+  } else if(type==='key'){
+    inp.classList.toggle('valid', v.startsWith('eyJ'));
+    inp.classList.toggle('invalid', v.length>10 && !v.startsWith('eyJ'));
+  }
+}
+
+async function cfgTest(){
+  const url=(document.getElementById('cfg-url').value||'').trim().replace(/\/$/,'');
+  const anon=(document.getElementById('cfg-anon').value||'').trim();
+  const res=document.getElementById('cfg-test-result');
+  if(!url||!anon){res.textContent='⚠ Completează URL și Anon Key mai întâi.';res.style.color='var(--warn)';return;}
+  res.textContent='Se testează...';res.style.color='var(--muted)';
+  try{
+    const testClient=window.supabase.createClient(url, anon);
+    // Încearcă un query simplu
+    const{error}=await testClient.from('profiles').select('id').limit(1);
+    if(error && error.code!=='PGRST116' && !error.message.includes('does not exist')){
+      throw new Error(error.message);
+    }
+    res.textContent='✓ Conexiune reușită!';res.style.color='var(--ok)';
+  }catch(e){
+    res.textContent='✗ '+e.message;res.style.color='var(--warn)';
+  }
+}
+
+function saveConfig(){
+  const url=(document.getElementById('cfg-url').value||'').trim().replace(/\/$/,'');
+  const anon=(document.getElementById('cfg-anon').value||'').trim();
+  const service=(document.getElementById('cfg-service').value||'').trim();
+  const errEl=document.getElementById('cfg-err');
+
+  if(!url||!url.includes('supabase')){
+    errEl.textContent='URL-ul Supabase nu este valid. Ex: https://xxxx.supabase.co';
+    errEl.classList.add('show');return;
+  }
+  if(!anon||!anon.startsWith('eyJ')){
+    errEl.textContent='Anon Key nu este valid (trebuie să înceapă cu eyJ...).';
+    errEl.classList.add('show');return;
+  }
+  errEl.classList.remove('show');
+
+  // Salvează în localStorage
+  localStorage.setItem(LS.url, url);
+  localStorage.setItem(LS.anon, anon);
+  if(service && service.startsWith('eyJ')) localStorage.setItem(LS.service, service);
+  else localStorage.removeItem(LS.service);
+
+  // Inițializează Supabase cu noile chei
+  if(initSupabaseWith(url, anon, service)){
+    document.getElementById('config-screen').style.display='none';
+    document.getElementById('auth-screen').style.display='flex';
+    // Setează listener
+    sb.auth.onAuthStateChange(async(_e,session)=>{
+      if(session?.user&&!currentUser) await onLoginSuccess(session.user);
+      else if(!session&&currentUser){
+        currentUser=null;currentProfile=null;
+        document.getElementById('auth-screen').style.display='flex';
+      }
+    });
+  } else {
+    errEl.textContent='Inițializare Supabase eșuată. Verifică valorile introduse.';
+    errEl.classList.add('show');
+  }
+}
+
+function showConfigScreen(){
+  // Pre-populează cu valorile curente
+  const cfg=loadLocalConfig();
+  document.getElementById('cfg-url').value=isPlaceholder(cfg.url)?'':cfg.url;
+  document.getElementById('cfg-anon').value=isPlaceholder(cfg.anon)?'':cfg.anon;
+  document.getElementById('cfg-service').value=isPlaceholder(cfg.service)?'':cfg.service||'';
+  document.getElementById('cfg-test-result').textContent='';
+  document.getElementById('cfg-err').classList.remove('show');
+  document.getElementById('auth-screen').style.display='none';
+  document.getElementById('config-screen').style.display='flex';
+}
+
+function clearConfig(){
+  localStorage.removeItem(LS.url);
+  localStorage.removeItem(LS.anon);
+  localStorage.removeItem(LS.service);
+  location.reload();
+}
+
 // ── Init ──
 async function initApp(){
-  initSupabase();
+  const cfg=loadLocalConfig();
+
+  if(!isConfigValid(cfg)){
+    // Nicio configurare salvată → afișează wizard
+    document.getElementById('config-screen').style.display='flex';
+    document.getElementById('auth-screen').style.display='none';
+    return;
+  }
+
+  initSupabaseWith(cfg.url, cfg.anon, cfg.service);
+
   if(!sb){setupOfflineMode();return;}
-  const{data:{session}}=await sb.auth.getSession();
-  if(session?.user) await onLoginSuccess(session.user);
+
+  try{
+    const{data:{session}}=await sb.auth.getSession();
+    if(session?.user) await onLoginSuccess(session.user);
+    else document.getElementById('auth-screen').style.display='flex';
+  }catch(e){
+    // Cheile pot fi greșite → arată config screen cu eroare
+    document.getElementById('config-screen').style.display='flex';
+    document.getElementById('auth-screen').style.display='none';
+    const errEl=document.getElementById('cfg-err');
+    errEl.textContent='Eroare de conexiune: '+e.message+'. Verifică URL-ul și cheia Anon.';
+    errEl.classList.add('show');
+    // Pre-populează câmpurile
+    document.getElementById('cfg-url').value=cfg.url||'';
+    document.getElementById('cfg-anon').value=cfg.anon||'';
+    return;
+  }
+
   sb.auth.onAuthStateChange(async(_e,session)=>{
     if(session?.user&&!currentUser) await onLoginSuccess(session.user);
     else if(!session&&currentUser){
