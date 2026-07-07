@@ -1442,13 +1442,22 @@ async function authLogin(){
       return;
     }
 
-    console.log('[NestViewer] Login success, loading profile...');
-    await onLoginSuccess(data.user);
+    console.log('[NestViewer] signInWithPassword OK — aștept onAuthStateChange...');
+    // Nu apelăm onLoginSuccess direct — lăsăm onAuthStateChange să facă asta
+    // după ce sesiunea e COMPLET stabilită (evită timing RLS issue)
+    // Timeout fallback: dacă onAuthStateChange nu vine în 5s, forțăm
+    const _loginTimeout=setTimeout(async()=>{
+      if(!currentUser){
+        console.warn('[NestViewer] onAuthStateChange timeout — forțez onLoginSuccess');
+        await onLoginSuccess(data.user);
+      }
+    }, 5000);
+    window._loginTimeout=_loginTimeout;
 
   }catch(e){
     console.error('[NestViewer] Login exception:', e);
     authSetLoading('btn-login',false);
-    showAuthErr('Eroare neașteptată: '+e.message+'\n\nVerifică consola browserului (F12) pentru detalii.');
+    showAuthErr('Eroare neașteptată: '+e.message+'\n\nVerifică consola (F12) pentru detalii.');
   }
 }
 
@@ -1511,14 +1520,18 @@ async function onLoginSuccess(user){
   authSetLoading('btn-login',false);
   authSetLoading('btn-reg',false);
 
-  // ── Citește profilul (cu retry după 300ms pentru timing Supabase) ──
+  // ── Verifică sesiunea e validă ──
+  const{data:{session:sess}}=await sb.auth.getSession();
+  console.log('[NestViewer] Session check:', sess?.user?.email||'no session');
+
+  // ── Citește profilul (3 încercări, cu pauze) ──
   let profile=null;
   for(let attempt=0;attempt<3;attempt++){
     try{
-      if(attempt>0) await new Promise(r=>setTimeout(r,300*attempt));
-      const{data,error}=await sb.from('profiles').select('*').eq('id',user.id).single();
-      if(data&&!error){profile=data;break;}
-      console.warn('[NestViewer] Profile read attempt',attempt+1,error?.message);
+      if(attempt>0) await new Promise(r=>setTimeout(r,500));
+      const{data:pd,error:pe}=await sb.from('profiles').select('*').eq('id',user.id).maybeSingle();
+      console.log('[NestViewer] Profile attempt',attempt+1,'→',pd?.role||pe?.message||'no data');
+      if(pd){profile=pd;break;}
     }catch(e){console.warn('[NestViewer] Profile read ex:',e.message);}
   }
 
@@ -2154,8 +2167,9 @@ async function initApp(){
   let _oasProcessing=false;
   sb.auth.onAuthStateChange(async(event,session)=>{
     console.log('[NestViewer] AuthStateChange:',event,session?.user?.email||'no user');
-    if(event==='SIGNED_IN'&&session?.user&&!currentUser&&!_oasProcessing){
+    if((event==='SIGNED_IN'||event==='INITIAL_SESSION')&&session?.user&&!currentUser&&!_oasProcessing){
       _oasProcessing=true;
+      clearTimeout(window._loginTimeout); // anulează fallback-ul
       await onLoginSuccess(session.user);
       _oasProcessing=false;
     } else if(event==='SIGNED_OUT'&&currentUser){
