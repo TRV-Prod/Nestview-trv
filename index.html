@@ -378,10 +378,15 @@ function isConfigValid(cfg){
 
 function initSupabaseWith(url, anon, service){
   try{
-    sb      = window.supabase.createClient(url, anon);
+    sb = window.supabase.createClient(url, anon, {
+      auth:{storageKey:'nv_auth',persistSession:true,autoRefreshToken:true}
+    });
+    // sbAdmin cu storage separat pentru a evita GoTrueClient conflicts
     sbAdmin = service && !isPlaceholder(service)
-                ? window.supabase.createClient(url, service)
-                : null;
+      ? window.supabase.createClient(url, service, {
+          auth:{storageKey:'nv_admin',persistSession:false,autoRefreshToken:false}
+        })
+      : null;
     return true;
   }catch(e){console.warn('Supabase init:',e.message);return false;}
 }
@@ -1446,6 +1451,13 @@ async function authLogin(){
     // Nu apelăm onLoginSuccess direct — lăsăm onAuthStateChange să facă asta
     // după ce sesiunea e COMPLET stabilită (evită timing RLS issue)
     // Timeout fallback: dacă onAuthStateChange nu vine în 5s, forțăm
+    // Unlock button after max 8 seconds regardless
+    setTimeout(()=>{
+      if(document.getElementById('btn-login')?.disabled){
+        authSetLoading('btn-login',false);
+        if(!currentUser) showAuthErr('Timeout — verifică consola (F12) pentru erori.');
+      }
+    }, 8000);
     const _loginTimeout=setTimeout(async()=>{
       if(!currentUser){
         console.warn('[NestViewer] onAuthStateChange timeout — forțez onLoginSuccess');
@@ -1701,7 +1713,9 @@ async function renderUtilizatori(){
   const el=document.getElementById('utilizatori-main');
   if(!canManageUsers()){el.innerHTML='<div class="empty-state"><div class="ei">🔒</div><div class="et">Acces restricționat.</div></div>';return;}
   if(!sb){el.innerHTML='<div class="empty-state"><div class="ei">⚙️</div><div class="et">Configurează Supabase în CONFIG.</div></div>';return;}
-  const{data:users}=await sb.from('profiles').select('*').order('created_at');
+  // sbAdmin bypasses RLS — citește toate profilele indiferent de politici
+  const adminClient=sbAdmin||sb;
+  const{data:users}=await adminClient.from('profiles').select('*').order('created_at');
   const rows=(users||[]).map(u=>{
     const canEdit=currentProfile.role==='developer'||(currentProfile.role==='admin'&&u.role!=='developer');
     const canDel=currentProfile.role==='developer'&&u.id!==currentUser.id&&u.role!=='developer';
@@ -1994,6 +2008,98 @@ schedConfirm=async function(){
 };
 
 // ── 9. addStockLocation / removeStockLocation — deja în funcțiile Supabase ──
+
+
+/* ══ STATIONARI FUNCTIONS (restaurate) ══ */
+function startStatTimer(){
+  if(stat.timerRef) clearInterval(stat.timerRef);
+  stat.timerRef=setInterval(()=>{
+    if(stat.active){const el=document.getElementById('stat-timer');if(el) el.textContent=formatDur(activeMs());}
+    else{const el=document.getElementById('run-timer');if(el) el.textContent=formatDur(runningMs());}
+  },1000);
+}
+function runningMs(){if(stat.active) return stat.runAccum;return stat.runAccum+(stat.runStart?Date.now()-stat.runStart:0);}
+function activeMs(){return stat.active?Date.now()-stat.active.startTime:0;}
+function statStartEvt(type){
+  if(stat.active) return;
+  const t=STAT_TYPES.find(x=>x.id===type);if(!t) return;
+  if(t.requiresDesc){
+    pendingStatType=type;
+    const panel=document.getElementById('def-desc-panel');
+    if(panel){
+      const lbl=panel.querySelector('label');const inp=panel.querySelector('.def-desc-input');
+      if(lbl) lbl.textContent=t.descLabel||'Motiv:';
+      if(inp) inp.placeholder=t.descPlaceholder||'Introduceți motivul…';
+      panel.style.display='block';inp?.focus();
+    }
+    return;
+  }
+  stat.runAccum+=Date.now()-(stat.runStart||Date.now());stat.runStart=null;
+  stat.active={type,label:t.label,icon:t.icon,startTime:Date.now(),desc:''};
+  renderStatPanel();
+}
+function statStartDef(){
+  const type=pendingStatType||'DEF';
+  const desc=document.getElementById('def-desc')?.value.trim()||'';
+  const panel=document.getElementById('def-desc-panel');
+  if(panel){panel.style.display='none';}
+  const inp=document.getElementById('def-desc');if(inp) inp.value='';
+  pendingStatType=null;
+  stat.runAccum+=Date.now()-(stat.runStart||Date.now());stat.runStart=null;
+  const t=STAT_TYPES.find(x=>x.id===type)||STAT_TYPES.find(x=>x.id==='DEF');
+  stat.active={type,label:t.label,icon:t.icon,startTime:Date.now(),desc};
+  renderStatPanel();
+}
+function statCancelDef(){
+  const panel=document.getElementById('def-desc-panel');if(panel) panel.style.display='none';
+  const inp=document.getElementById('def-desc');if(inp) inp.value='';
+}
+function statStop(){
+  if(!stat.active) return;
+  const endTime=Date.now();const duration=endTime-stat.active.startTime;
+  stat.log.push({...stat.active,endTime,duration});
+  stat.active=null;stat.runStart=Date.now();
+  renderStatPanel();renderStatTable();
+}
+function toggleStatPanel(){
+  stat.panelOpen=!stat.panelOpen;
+  const body=document.getElementById('stat-panel-body');
+  if(body) body.style.display=stat.panelOpen?'block':'none';
+  const ch=document.querySelector('.stat-chevron');if(ch) ch.textContent=stat.panelOpen?'▾':'▸';
+}
+function renderStatPanel(){
+  const el=document.getElementById('stat-panel');if(!el) return;
+  const isActive=!!stat.active;
+  const btns=STAT_TYPES.map(t=>`<button class="stat-btn ${t.btnCls}" onclick="statStartEvt('${t.id}')" ${isActive?'disabled':''}>${t.icon} ${t.label}</button>`).join('');
+  const statusHtml=isActive
+    ?`<div class="stat-status stopped"><div class="stat-dot red"></div><div><div class="stat-status-text">${stat.active.icon} ${stat.active.label}${stat.active.desc?`: <em>${esc(stat.active.desc)}</em>`:''}</div><div style="font-size:.71rem;color:var(--muted)">Funcționare acumulată: ${formatDur(stat.runAccum)}</div></div><div class="stat-timer-big" id="stat-timer">${formatDur(activeMs())}</div><button class="stat-btn stop-btn" onclick="statStop()">⏹ STOP</button></div>`
+    :`<div class="stat-status running"><div class="stat-dot green"></div><div class="stat-status-text">ÎN FUNCȚIUNE</div><div class="stat-timer-big" id="run-timer">${formatDur(runningMs())}</div></div>`;
+  el.innerHTML=`<div class="stat-panel-head" onclick="toggleStatPanel()"><span style="font-size:.95rem">📡</span><span class="stat-panel-title">Monitorizare Linie</span><span class="stat-chevron" style="margin-left:auto;color:var(--dim)">${stat.panelOpen?'▾':'▸'}</span></div>
+  <div id="stat-panel-body" style="display:${stat.panelOpen?'block':'none'}"><div class="stat-panel-body">
+    ${statusHtml}
+    <div class="def-desc-panel" id="def-desc-panel">
+      <label>🔧 Descriere defect:</label>
+      <textarea class="def-desc-input" id="def-desc" placeholder="ex: Blocaj mese, Alarmă temperatură…"></textarea>
+      <div class="def-desc-btns"><button class="btn-sm btn-start-def" onclick="statStartDef()">▶ Start cronometru</button><button class="btn-sm btn-cancel-def" onclick="statCancelDef()">Anulează</button></div>
+    </div>
+    ${!isActive?`<div class="stat-btns">${btns}</div>`:''}
+    <div id="stat-log-area"></div>
+  </div></div>`;
+  renderStatTable();
+  startStatTimer();
+}
+function renderStatTable(){
+  const el=document.getElementById('stat-log-area');if(!el) return;
+  if(!stat.log.length){el.innerHTML='<div class="stat-log-empty">Niciun eveniment înregistrat.</div>';return;}
+  const rows=stat.log.map(e=>`<tr><td><span class="mbadge" style="font-size:.6rem;${getStatColor(e.type)}">${e.icon} ${e.label}</span></td><td style="font-size:.75rem;color:var(--muted)">${e.desc||'—'}</td><td style="font-family:var(--mono);font-size:.73rem">${formatTime(e.startTime)}</td><td style="font-family:var(--mono);font-size:.73rem">${formatTime(e.endTime)}</td><td style="font-family:var(--mono);font-weight:700;font-size:.8rem;color:var(--accent)">${formatDur(e.duration)}</td></tr>`).join('');
+  const sum={};for(const t of STAT_TYPES) sum[t.id]={count:0,total:0,label:t.label,icon:t.icon};
+  for(const e of stat.log){if(sum[e.type]){sum[e.type].count++;sum[e.type].total+=e.duration;}}
+  const sumItems=Object.values(sum).filter(s=>s.count>0).map(s=>`<div class="stat-sum-item"><div class="ss-label">${s.icon} ${s.label}</div><div class="ss-val">${formatDur(s.total)} <span style="color:var(--muted);font-size:.72rem">(${s.count}×)</span></div></div>`).join('');
+  el.innerHTML=`<div class="stat-log-wrap"><table class="stat-log"><thead><tr><th>Tip</th><th>Descriere</th><th>Start</th><th>Stop</th><th>Durată</th></tr></thead><tbody>${rows}</tbody></table></div>${sumItems?`<div class="stat-summary">${sumItems}</div>`:''}`;
+}
+function getStatColor(type){const colors={CTC:'background:rgba(240,160,0,.12);color:var(--accent);border:1px solid rgba(240,160,0,.3)',MP:'background:rgba(77,155,255,.12);color:var(--bodor);border:1px solid rgba(77,155,255,.3)',PROG:'background:rgba(123,97,255,.12);color:var(--info);border:1px solid rgba(123,97,255,.3)',DEF:'background:rgba(239,83,80,.1);color:var(--warn);border:1px solid rgba(239,83,80,.3)',VR:'background:rgba(255,179,0,.1);color:#ffb300;border:1px solid rgba(255,179,0,.3)'};return colors[type]||'';}
+function formatTime(ts){return new Date(ts).toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+
 
 // ── 10. Stationari log – salveaza evenimentele în DB ──
 const _origStatStop=statStop;
