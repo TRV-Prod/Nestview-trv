@@ -517,7 +517,7 @@ function initSupabase(){
     <div id="auth-login-form">
       <input type="email" class="auth-inp" id="auth-email" placeholder="Email" autocomplete="email">
       <input type="password" class="auth-inp" id="auth-pass" placeholder="Parolă" autocomplete="current-password">
-      <button class="auth-btn" onclick="authLogin()">Intră în aplicație</button>
+      <button class="auth-btn" id="btn-login" onclick="authLogin()">Intră în aplicație</button>
       <div class="auth-toggle">Nu ai cont? <a onclick="authShowRegister()">Prima configurare</a></div>
     <div class="auth-toggle" style="margin-top:6px">
       <a onclick="showConfigScreen()" style="font-size:.7rem;color:var(--dim)">⚙ Schimbă server Supabase</a>
@@ -533,7 +533,7 @@ function initSupabase(){
         <option value="admin">Admin</option>
         <option value="developer">Developer</option>
       </select>
-      <button class="auth-btn" onclick="authRegister()">Înregistrare</button>
+      <button class="auth-btn" id="btn-reg" onclick="authRegister()">Înregistrare</button>
       <div class="auth-toggle"><a onclick="authShowLogin()">← Înapoi la login</a></div>
     </div>
   </div>
@@ -1397,15 +1397,43 @@ function showToast(msg,type='ok',ms=3000){
 function showAuthErr(msg){const el=document.getElementById('auth-err');el.textContent=msg;el.classList.add('show');}
 function hideAuthErr(){document.getElementById('auth-err').classList.remove('show');}
 
+function authSetLoading(btn,loading){
+  const el=document.getElementById(btn);
+  if(!el) return;
+  el.disabled=loading;
+  el.textContent=loading?'Se procesează...':(btn==='btn-login'?'Intră în aplicație':'Înregistrare');
+}
+
 async function authLogin(){
-  if(!sb){showAuthErr('Configurează Supabase în CONFIG.');return;}
+  if(!sb){
+    showAuthErr('⚙ Supabase nu este configurat. Folosește linkul de mai jos pentru a configura serverul.');
+    return;
+  }
   hideAuthErr();
   const email=document.getElementById('auth-email').value.trim();
   const pass=document.getElementById('auth-pass').value;
   if(!email||!pass){showAuthErr('Completează email și parolă.');return;}
-  const{data,error}=await sb.auth.signInWithPassword({email,password:pass});
-  if(error){showAuthErr('Eroare: '+error.message);return;}
-  await onLoginSuccess(data.user);
+
+  authSetLoading('btn-login',true);
+  try{
+    const{data,error}=await sb.auth.signInWithPassword({email,password:pass});
+    if(error){
+      let msg='Eroare: '+error.message;
+      if(error.message.includes('Invalid login credentials'))
+        msg='Email sau parolă incorectă. Dacă nu ai cont, înregistrează-te mai jos.';
+      else if(error.message.includes('Email not confirmed'))
+        msg='Email-ul nu a fost confirmat. Dezactivează confirmarea email din Supabase → Authentication → Settings → Email → "Enable email confirmations" = OFF';
+      else if(error.message.includes('fetch'))
+        msg='Nu s-a putut conecta la Supabase. Verifică URL-ul din configurare.';
+      showAuthErr(msg);
+      authSetLoading('btn-login',false);
+      return;
+    }
+    await onLoginSuccess(data.user);
+  }catch(e){
+    showAuthErr('Eroare neașteptată: '+e.message);
+    authSetLoading('btn-login',false);
+  }
 }
 
 async function authRegister(){
@@ -1417,9 +1445,34 @@ async function authRegister(){
   const role=document.getElementById('reg-role').value;
   if(!name||!email||!pass){showAuthErr('Completează toate câmpurile.');return;}
   if(pass.length<6){showAuthErr('Parola trebuie să aibă minim 6 caractere.');return;}
-  const{data,error}=await sb.auth.signUp({email,password:pass,options:{data:{display_name:name,role}}});
-  if(error){showAuthErr('Eroare: '+error.message);return;}
-  if(data.user) await onLoginSuccess(data.user);
+
+  authSetLoading('btn-reg',true);
+  try{
+    const{data,error}=await sb.auth.signUp({
+      email,password:pass,
+      options:{data:{display_name:name,role},emailRedirectTo:window.location.href}
+    });
+    if(error){
+      showAuthErr('Eroare înregistrare: '+error.message);
+      authSetLoading('btn-reg',false);
+      return;
+    }
+    if(!data.user){
+      showAuthErr('Înregistrare trimisă. Dacă primești email de confirmare, dă click pe link-ul din el, APOI dezactivează confirmările: Supabase → Authentication → Settings → "Enable email confirmations" = OFF');
+      authSetLoading('btn-reg',false);
+      return;
+    }
+    // Dacă user-ul e returnat direct (fără confirmare), continuă
+    if(data.session){
+      await onLoginSuccess(data.user);
+    } else {
+      showAuthErr('⚠ Confirmarea email este activată în Supabase. Mergi la: Supabase Dashboard → Authentication → Settings → Email → dezactivează "Enable email confirmations", apoi înregistrează-te din nou.');
+      authSetLoading('btn-reg',false);
+    }
+  }catch(e){
+    showAuthErr('Eroare: '+e.message);
+    authSetLoading('btn-reg',false);
+  }
 }
 
 async function authLogout(){
@@ -1438,11 +1491,49 @@ async function authLogout(){
 async function onLoginSuccess(user){
   currentUser=user;
   if(!sb){setupOfflineMode();return;}
-  const{data}=await sb.from('profiles').select('*').eq('id',user.id).single();
-  currentProfile=data||{role:'operator',display_name:user.email};
+
+  // Resetare loading buttons
+  authSetLoading('btn-login',false);
+  authSetLoading('btn-reg',false);
+
+  // Citește profilul utilizatorului
+  let profile=null;
+  try{
+    const{data,error}=await sb.from('profiles').select('*').eq('id',user.id).single();
+    if(!error) profile=data;
+  }catch(e){console.warn('Profile read:',e);}
+
+  // Dacă profilul nu există (trigger n-a funcționat), îl creăm manual
+  if(!profile){
+    try{
+      const snap=await sb.from('profiles').select('id',{count:'exact',head:true});
+      const isFirst=(snap.count||0)===0;
+      const role=isFirst?'developer':(user.user_metadata?.role||'operator');
+      const{data:newProf}=await sb.from('profiles').insert({
+        id:user.id,role,
+        display_name:user.user_metadata?.display_name||user.email.split('@')[0],
+        email:user.email,active:true
+      }).select().single();
+      profile=newProf;
+    }catch(e){
+      console.warn('Profile create:',e);
+      profile={role:'operator',display_name:user.email};
+    }
+  }
+
+  currentProfile=profile;
   setupAppUI();
-  await loadAllData();
-  setupRealtime();
+
+  // Încarcă datele cu feedback vizual
+  showToast('Se încarcă datele...','ok',10000);
+  try{
+    await loadAllData();
+    showToast('Bine ai revenit, '+currentProfile.display_name+'!');
+    setupRealtime();
+  }catch(e){
+    showToast('Date locale — verifică conexiunea Supabase','err',5000);
+    console.warn('loadAllData:',e);
+  }
 }
 
 function setupAppUI(){
