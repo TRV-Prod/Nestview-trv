@@ -338,64 +338,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
 <!-- ══ Supabase SDK ══ -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-<script>
-// ═══════════════════════════════════════════════════════════
-// CONFIG – completează cu valorile din Supabase Dashboard
-// Settings → API
-// ═══════════════════════════════════════════════════════════
-const CONFIG = {
-  SUPABASE_URL:         'https://YOUR_PROJECT.supabase.co',
-  SUPABASE_ANON_KEY:    'YOUR_ANON_KEY',
-  SUPABASE_SERVICE_KEY: 'YOUR_SERVICE_ROLE_KEY'
-};
 
-let sb      = null;   // Supabase client (anon)
-let sbAdmin = null;   // Supabase admin (service role)
-let currentUser    = null;
-let currentProfile = null;
-let _realtimeSubs  = []; // subscriptions actuale
-
-// ── Config din localStorage (prioritate față de CONFIG hardcodat) ──
-const LS = {
-  url:     'nv_sb_url',
-  anon:    'nv_sb_anon',
-  service: 'nv_sb_service'
-};
-
-function loadLocalConfig(){
-  return {
-    url:     localStorage.getItem(LS.url)     || CONFIG.SUPABASE_URL,
-    anon:    localStorage.getItem(LS.anon)    || CONFIG.SUPABASE_ANON_KEY,
-    service: localStorage.getItem(LS.service) || CONFIG.SUPABASE_SERVICE_KEY
-  };
-}
-
-function isPlaceholder(v){ return !v||v.startsWith('YOUR_')||v.includes('YOUR_PROJECT'); }
-
-function isConfigValid(cfg){
-  return cfg.url && !isPlaceholder(cfg.url) && cfg.anon && !isPlaceholder(cfg.anon);
-}
-
-function initSupabaseWith(url, anon, service){
-  try{
-    sb = window.supabase.createClient(url, anon, {
-      auth:{storageKey:'nv_auth',persistSession:true,autoRefreshToken:true}
-    });
-    // sbAdmin cu storage separat pentru a evita GoTrueClient conflicts
-    sbAdmin = service && !isPlaceholder(service)
-      ? window.supabase.createClient(url, service, {
-          auth:{storageKey:'nv_admin',persistSession:false,autoRefreshToken:false}
-        })
-      : null;
-    return true;
-  }catch(e){console.warn('Supabase init:',e.message);return false;}
-}
-
-function initSupabase(){
-  const cfg = loadLocalConfig();
-  if(isConfigValid(cfg)) initSupabaseWith(cfg.url, cfg.anon, cfg.service);
-}
-</script>
 </head>
 <body>
 
@@ -723,6 +666,88 @@ fi.addEventListener('change',e=>{processFiles(e.target.files);e.target.value='';
    Imaginile sunt stocate local per device.
    La reload din Supabase, sunt restaurate din cache.
    ════════════════════════════════ */
+
+/* ══ SUPABASE STORAGE – imagini piese ══ */
+
+function sanitizePath(s){return s.replace(/[^a-zA-Z0-9._-]/g,'_').slice(0,80);}
+
+async function ensureStorageBucket(){
+  if(!sb) return false;
+  try{
+    const{error}=await sb.storage.getBucket('nest-images');
+    if(error&&error.message.includes('not found')){
+      await sb.storage.createBucket('nest-images',{public:true});
+    }
+    return true;
+  }catch(e){console.warn('Bucket check:',e.message);return false;}
+}
+
+async function uploadImageToStorage(source, alias, dataUrl){
+  if(!sb||!dataUrl||!currentUser) return null;
+  if(storageUsedBytes>=STORAGE_LIMIT){
+    console.warn('Storage 100% — upload oprit');return null;
+  }
+  try{
+    const isJpeg=dataUrl.startsWith('data:image/jpeg');
+    const ext=isJpeg?'jpg':'png';
+    const mime=isJpeg?'image/jpeg':'image/png';
+    const path=sanitizePath(source)+'/'+sanitizePath(alias)+'.'+ext;
+    // base64 → Uint8Array
+    const base64=dataUrl.split(',')[1];
+    const bytes=Uint8Array.from(atob(base64),c=>c.charCodeAt(0));
+    const blob=new Blob([bytes],{type:mime});
+    const{error}=await sb.storage.from('nest-images').upload(path,blob,{contentType:mime,upsert:true});
+    if(error) throw error;
+    storageUsedBytes+=bytes.length;
+    const{data:urlData}=sb.storage.from('nest-images').getPublicUrl(path);
+    return urlData.publicUrl;
+  }catch(e){
+    console.warn('Upload image error:',e.message);
+    return null;
+  }
+}
+
+async function deleteSourceImages(source){
+  if(!sb) return;
+  try{
+    const folder=sanitizePath(source);
+    const{data:files}=await sb.storage.from('nest-images').list(folder);
+    if(files&&files.length){
+      const paths=files.map(f=>folder+'/'+f.name);
+      await sb.storage.from('nest-images').remove(paths);
+    }
+  }catch(e){console.warn('Delete images:',e.message);}
+}
+
+async function refreshStorageUsage(){
+  if(!sb) return;
+  try{
+    // Listăm toate fișierele din bucket pentru a calcula dimensiunea totală
+    const{data:folders}=await sb.storage.from('nest-images').list('',{limit:200});
+    if(!folders) return;
+    let total=0;
+    for(const folder of folders.filter(f=>!f.name.includes('.'))){
+      const{data:files}=await sb.storage.from('nest-images').list(folder.name,{limit:500});
+      if(files) files.forEach(f=>total+=f.metadata?.size||0);
+    }
+    storageUsedBytes=total;
+    updateStorageBar();
+  }catch(e){console.warn('Storage usage:',e.message);}
+}
+
+function updateStorageBar(){
+  const el=document.getElementById('storage-bar-fill');
+  const lbl=document.getElementById('storage-bar-lbl');
+  if(!el||!lbl) return;
+  const pct=Math.min(100,(storageUsedBytes/STORAGE_LIMIT*100));
+  const mb=(storageUsedBytes/1048576).toFixed(1);
+  const color=pct>90?'var(--warn)':pct>70?'var(--accent)':'var(--ok)';
+  el.style.width=pct+'%';el.style.background=color;
+  lbl.textContent=mb+' MB / 1024 MB ('+pct.toFixed(1)+'%)';
+  lbl.style.color=color;
+}
+
+
 function _imgCacheKey(source){
   return 'nv_img_'+source.replace(/[^a-zA-Z0-9._-]/g,'_').slice(0,60);
 }
@@ -780,7 +805,7 @@ async function processFiles(files){
 
 function onLoaded(programs){
   allPrograms.push(...programs);
-  programs.forEach(p=>{ensurePick(sheetKey(p.sheetMaterial));ensureOp(p);ensureSchedule(p.source);});
+  programs.forEach(p=>{p._importedAt=Date.now();ensurePick(sheetKey(p.sheetMaterial));ensureOp(p);ensureSchedule(p.source);});
   // Adaugă surse noi în coada de prompt-uri Schedule No.
   const newSrc=[...new Set(programs.map(p=>p.source))].filter(s=>!schedQueue.includes(s));
   schedQueue.push(...newSrc);
@@ -1022,44 +1047,167 @@ async function parseL3030PDF(pdf, filename){
 function setNestFilter(f){nestFilter=f;['all','l3030','bodor'].forEach(x=>document.getElementById('fn-'+x)?.classList.toggle('active',x===f));renderNesturi();}
 function renderNesturi(){
   const container=document.getElementById('cards');container.innerHTML='';
-  let filtered=nestFilter==='all'?[...allPrograms]:[...allPrograms.filter(p=>p.type===nestFilter)];
-  // Sortare după prioritate: 1,2,3..., apoi nepriorizate
-  filtered.sort((a,b)=>{const pa=getPriority(a.source),pb=getPriority(b.source);if(!pa&&!pb) return 0;if(!pa) return 1;if(!pb) return -1;return pa-pb;});
-  if(!filtered.length&&allPrograms.length){container.innerHTML='<div class="empty-state"><div class="ei">🔍</div><div class="et">Niciun nest pentru filtrul selectat.</div></div>';return;}
-  filtered.forEach(p=>{
-    const isL=p.type==='l3030';const prog=isL?p.programName:`${p.source} – ${p.programName}`;const rpt=isL?(p.rpt||'1'):(p.numOfSheet||0);
-    // Câmpuri: # | Imagine (dacă există) | Alias | Buc.
-    const hasImg=p.parts.some(x=>x.imageDataUrl);
-    const extraCells=isL?`<div class="ic"><div class="lbl">Fișier sursă</div><div class="val mono" style="font-size:.71rem;color:var(--muted)">${p.source}</div></div>`:`<div class="ic"><div class="lbl">PlateNum</div><div class="val mono">${p.plateNum||'—'}</div></div><div class="ic"><div class="lbl">JobNum</div><div class="val mono">${p.jobNum||'—'}</div></div>`;
-    let partsHTML='';
-    if(p.parts.length){const rows=p.parts.map((x,i)=>`<tr><td class="row-num">${i+1}</td>${hasImg?`<td class="img-cell">${x.imageDataUrl?`<img src="${x.imageDataUrl}" loading="lazy" alt="${x.alias}">`:'<span style="color:var(--dim);font-size:.71rem">—</span>'}</td>`:''}<td class="alias-cell">${x.alias}</td><td><span class="pcs-pill">${x.pcs}</span></td></tr>`).join('');partsHTML=`<div class="sec-hd">${p.parts.length} ${p.parts.length===1?'tip piesă':'tipuri piese'}</div><div class="parts-wrap"><table class="pt"><thead><tr><th>#</th>${hasImg?'<th>Imagine</th>':''}<th>Alias</th><th>Buc.</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
-    const thumbHTML=(p.thumbnail)?`<div class="thumb-section"><div class="sec-hd" style="margin-top:11px">Preview</div><img src="${p.thumbnail}" loading="lazy"></div>`:'';
-    const div=document.createElement('div');div.className='card open';
-    div.innerHTML=`<div class="card-head" onclick="this.closest('.card').classList.toggle('open')"><span class="mbadge ${isL?'mb-l':'mb-b'}">${isL?'⚡ L3030':'🔵 Bodor'}</span><span class="card-prog">${prog}</span><span class="card-pill">${displaySheet(p.sheetMaterial)}</span><span class="card-rpt"><strong>${rpt}</strong> coli</span><span class="chevron">▾</span></div><div class="card-body"><div class="info-row"><div class="ic"><div class="lbl">Mașină</div><div class="val">${p.machine}</div></div><div class="ic"><div class="lbl">Program / Result</div><div class="val mono">${p.programName}</div></div><div class="ic"><div class="lbl">Format tablă</div><div class="val mono">${displaySheet(p.sheetMaterial)}</div></div><div class="ic"><div class="lbl">Nr. coli</div><div class="val">${rpt}</div></div>${extraCells}</div>${partsHTML}${thumbHTML}</div>`;
-    container.appendChild(div);
-  });
+
+  // Storage bar HTML
+  const storageBar=`
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 12px;background:var(--surf);border:1px solid var(--border);border-radius:8px;font-size:.72rem">
+      <span style="color:var(--muted);white-space:nowrap">💾 Storage Supabase:</span>
+      <div style="flex:1;height:6px;background:var(--surf3);border-radius:3px;overflow:hidden">
+        <div id="storage-bar-fill" style="height:100%;width:0%;border-radius:3px;background:var(--ok);transition:width .5s"></div>
+      </div>
+      <span id="storage-bar-lbl" style="color:var(--muted);white-space:nowrap">—</span>
+    </div>`;
+
+  // Sort selector
+  const sortOptions=[
+    {v:'priority',l:'⭐ Prioritate'},
+    {v:'newest',l:'🕐 Cele mai noi'},
+    {v:'oldest',l:'🕐 Cele mai vechi'},
+    {v:'sheet',l:'📦 Tablă consumată'},
+    {v:'machine',l:'🔧 Mașină'},
+  ];
+  const sortBar=`<div class="filter-bar" style="margin-bottom:8px">
+    <span class="lbl">Ordonare:</span>
+    ${sortOptions.map(o=>`<button class="filt-btn ${nestSort===o.v?'active':''}" onclick="setNestSort('${o.v}')">${o.l}</button>`).join('')}
+  </div>`;
+
+  // Inject before cards
+  container.insertAdjacentHTML('beforebegin', storageBar + sortBar);
+  updateStorageBar();
+
+  // Filter + group by source
+  const base=nestFilter==='all'?[...allPrograms]:[...allPrograms.filter(p=>p.type===nestFilter)];
+  const sorted=sortNests(base);
+
+  if(!sorted.length&&allPrograms.length){
+    container.innerHTML='<div class="empty-state"><div class="ei">🔍</div><div class="et">Niciun nest pentru filtrul selectat.</div></div>';return;
+  }
+  sorted.forEach(p=>renderCard(p,container));
 }
 
-/* ══ Picking ══ */
+function setNestSort(v){nestSort=v;renderNesturi();}
+
+function sortNests(programs){
+  // Group by source
+  const bySource={};
+  programs.forEach(p=>{if(!bySource[p.source]) bySource[p.source]=[];bySource[p.source].push(p);});
+  let sources=Object.keys(bySource);
+
+  if(nestSort==='priority'){
+    sources.sort((a,b)=>{const pa=getPriority(a),pb=getPriority(b);if(!pa&&!pb) return 0;if(!pa) return 1;if(!pb) return -1;return pa-pb;});
+  } else if(nestSort==='newest'){
+    sources.sort((a,b)=>(bySource[b][0]?._importedAt||0)-(bySource[a][0]?._importedAt||0));
+  } else if(nestSort==='oldest'){
+    sources.sort((a,b)=>(bySource[a][0]?._importedAt||0)-(bySource[b][0]?._importedAt||0));
+  } else if(nestSort==='sheet'){
+    sources.sort((a,b)=>{
+      const sa=bySource[a].reduce((s,p)=>s+effectiveNec(p),0);
+      const sb_=bySource[b].reduce((s,p)=>s+effectiveNec(p),0);
+      return sb_-sa;
+    });
+  } else if(nestSort==='machine'){
+    sources.sort((a,b)=>(bySource[a][0]?.machine||'').localeCompare(bySource[b][0]?.machine||''));
+  }
+
+  return sources.flatMap(s=>bySource[s]);
+}
+
+/* ══ STAT TIMER (restaurat) ══ */
+function startStatTimer(){
+  if(stat.timerRef) clearInterval(stat.timerRef);
+  stat.timerRef=setInterval(()=>{
+    if(stat.active){const el=document.getElementById('stat-timer');if(el) el.textContent=formatDur(activeMs());}
+    else{const el=document.getElementById('run-timer');if(el) el.textContent=formatDur(runningMs());}
+  },1000);
+}
+function runningMs(){if(stat.active) return stat.runAccum;return stat.runAccum+(stat.runStart?Date.now()-stat.runStart:0);}
+function activeMs(){return stat.active?Date.now()-stat.active.startTime:0;}
+function statStop(){
+  if(!stat.active) return;
+  const endTime=Date.now();const duration=endTime-stat.active.startTime;
+  stat.log.push({...stat.active,endTime,duration});
+  stat.active=null;stat.runStart=Date.now();
+  renderStatPanel();renderStatTable();
+}
+function statStartEvt(type){if(stat.active) return;const t=STAT_TYPES.find(x=>x.id===type);if(!t) return;if(t.requiresDesc){pendingStatType=type;const p=document.getElementById('def-desc-panel');if(p){p.style.display='block';p.querySelector('.def-desc-input')?.focus();}return;}stat.runAccum+=Date.now()-(stat.runStart||Date.now());stat.runStart=null;stat.active={type,label:t.label,icon:t.icon,startTime:Date.now(),desc:''};renderStatPanel();}
+function statStartDef(){const type=pendingStatType||'DEF';const desc=document.getElementById('def-desc')?.value.trim()||'';document.getElementById('def-desc-panel').style.display='none';document.getElementById('def-desc').value='';pendingStatType=null;stat.runAccum+=Date.now()-(stat.runStart||Date.now());stat.runStart=null;const t=STAT_TYPES.find(x=>x.id===type)||STAT_TYPES.find(x=>x.id==='DEF');stat.active={type,label:t.label,icon:t.icon,startTime:Date.now(),desc};renderStatPanel();}
+function statCancelDef(){document.getElementById('def-desc-panel').style.display='none';document.getElementById('def-desc').value='';}
+function toggleStatPanel(){stat.panelOpen=!stat.panelOpen;const body=document.getElementById('stat-panel-body');if(body) body.style.display=stat.panelOpen?'block':'none';const ch=document.querySelector('.stat-chevron');if(ch) ch.textContent=stat.panelOpen?'▾':'▸';}
+function renderStatPanel(){const el=document.getElementById('stat-panel');if(!el) return;const isActive=!!stat.active;const btns=STAT_TYPES.map(t=>`<button class="stat-btn ${t.btnCls}" onclick="statStartEvt('${t.id}')" ${isActive?'disabled':''}>${t.icon} ${t.label}</button>`).join('');const statusHtml=isActive?`<div class="stat-status stopped"><div class="stat-dot red"></div><div><div class="stat-status-text">${stat.active.icon} ${stat.active.label}${stat.active.desc?`: <em>${esc(stat.active.desc)}</em>`:''}</div></div><div class="stat-timer-big" id="stat-timer">${formatDur(activeMs())}</div><button class="stat-btn stop-btn" onclick="statStop()">⏹ STOP</button></div>`:`<div class="stat-status running"><div class="stat-dot green"></div><div class="stat-status-text">ÎN FUNCȚIUNE</div><div class="stat-timer-big" id="run-timer">${formatDur(runningMs())}</div></div>`;el.innerHTML=`<div class="stat-panel-head" onclick="toggleStatPanel()"><span>📡</span><span class="stat-panel-title">Monitorizare Linie</span><span class="stat-chevron" style="margin-left:auto;color:var(--dim)">${stat.panelOpen?'▾':'▸'}</span></div><div id="stat-panel-body" style="display:${stat.panelOpen?'block':'none'}"><div class="stat-panel-body">${statusHtml}<div class="def-desc-panel" id="def-desc-panel"><label>🔧 Descriere:</label><textarea class="def-desc-input" id="def-desc" placeholder="ex: Blocaj mese…"></textarea><div class="def-desc-btns"><button class="btn-sm btn-start-def" onclick="statStartDef()">▶ Start</button><button class="btn-sm btn-cancel-def" onclick="statCancelDef()">Anulează</button></div></div>${!isActive?`<div class="stat-btns">${btns}</div>`:''}<div id="stat-log-area"></div></div></div>`;renderStatTable();startStatTimer();}
+function renderStatTable(){const el=document.getElementById('stat-log-area');if(!el) return;if(!stat.log.length){el.innerHTML='<div class="stat-log-empty">Niciun eveniment.</div>';return;}const rows=stat.log.map(e=>`<tr><td><span class="mbadge" style="font-size:.6rem;${getStatColor(e.type)}">${e.icon} ${e.label}</span></td><td style="font-size:.75rem;color:var(--muted)">${e.desc||'—'}</td><td style="font-family:var(--mono);font-size:.73rem">${formatTime(e.startTime)}</td><td style="font-family:var(--mono);font-size:.73rem">${formatTime(e.endTime)}</td><td style="font-family:var(--mono);font-weight:700;font-size:.8rem;color:var(--accent)">${formatDur(e.duration)}</td></tr>`).join('');el.innerHTML=`<div class="stat-log-wrap"><table class="stat-log"><thead><tr><th>Tip</th><th>Descriere</th><th>Start</th><th>Stop</th><th>Durată</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
+function getStatColor(type){const colors={CTC:'background:rgba(240,160,0,.12);color:var(--accent)',MP:'background:rgba(77,155,255,.12);color:var(--bodor)',PROG:'background:rgba(123,97,255,.12);color:var(--info)',DEF:'background:rgba(239,83,80,.1);color:var(--warn)',VR:'background:rgba(255,179,0,.1);color:#ffb300'};return colors[type]||'';}
+function formatTime(ts){return new Date(ts).toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+
+/* ══ RENDER CARD ══ */
+function renderCard(data,container){
+  const isL=data.type==='l3030';
+  const prog=data.programName;
+  const rpt=isL?(data.rpt||'1'):(data.numOfSheet||0);
+  const hasImg=data.parts.some(x=>x.imageDataUrl||x.imageUrl);
+  const thumb=data.thumbnailUrl||data.thumbnail;
+  const extraCells=isL
+    ?`<div class="ic"><div class="lbl">Fișier sursă</div><div class="val mono" style="font-size:.71rem;color:var(--muted)">${data.source}</div></div>`
+    :`<div class="ic"><div class="lbl">PlateNum</div><div class="val mono">${data.plateNum||'—'}</div></div><div class="ic"><div class="lbl">JobNum</div><div class="val mono">${data.jobNum||'—'}</div></div>`;
+  let partsHTML='';
+  if(data.parts.length){
+    const rows=data.parts.map((x,i)=>{
+      const imgSrc=x.imageUrl||x.imageDataUrl;
+      return `<tr><td class="row-num">${i+1}</td>
+        ${hasImg?`<td class="img-cell">${imgSrc?`<img src="${imgSrc}" loading="lazy" alt="${x.alias}">`:'<span style="color:var(--dim);font-size:.71rem">—</span>'}</td>`:''}
+        <td class="alias-cell">${x.alias}</td><td><span class="pcs-pill">${x.pcs}</span></td>
+      </tr>`;
+    }).join('');
+    partsHTML=`<div class="sec-hd">${data.parts.length} ${data.parts.length===1?'tip piesă':'tipuri piese'}</div>
+    <div class="parts-wrap"><table class="pt"><thead><tr><th>#</th>${hasImg?'<th>Imagine</th>':''}<th>Alias</th><th>Buc.</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+  const thumbHTML=thumb?`<div class="thumb-section"><div class="sec-hd" style="margin-top:11px">Preview</div><img src="${thumb}" loading="lazy"></div>`:'';
+  const sn=getSchedNo(data.source);
+  const div=document.createElement('div');div.className='card open';
+  div.innerHTML=`<div class="card-head" onclick="this.closest('.card').classList.toggle('open')">
+    <span class="mbadge ${isL?'mb-l':'mb-b'}">${isL?'⚡ L3030':'🔵 Bodor'}</span>
+    ${sn?`<span style="font-family:var(--mono);font-size:.7rem;color:var(--accent);background:rgba(240,160,0,.08);border:1px solid rgba(240,160,0,.3);border-radius:5px;padding:2px 7px;flex-shrink:0">📋 ${esc(sn)}</span>`:''}
+    <span class="card-prog">${prog}</span>
+    <span class="card-pill">${displaySheet(data.sheetMaterial)}</span>
+    <span onclick="event.stopPropagation()" style="display:flex;align-items:center;gap:3px;flex-shrink:0">
+      <span class="prio-lbl">Prio.</span>
+      <input class="prio-inp" type="number" min="1" max="999" value="${getPriority(data.source)||''}" placeholder="—" oninput="setPriority('${esc(data.source)}',this.value)" onclick="event.stopPropagation()">
+    </span>
+    <button class="card-del" onclick="event.stopPropagation();deleteNest('${esc(data.source)}')" title="Șterge">🗑</button>
+    <span class="card-rpt"><strong>${rpt}</strong> coli</span>
+    <span class="chevron">▾</span></div>
+  <div class="card-body">
+    <div class="info-row">
+      <div class="ic"><div class="lbl">Mașină</div><div class="val">${data.machine}</div></div>
+      <div class="ic"><div class="lbl">Schedule No.</div><div class="val" style="display:flex;gap:5px;align-items:center">
+        <input class="sched-inp" data-src="${esc(data.source)}" value="${esc(getSchedNo(data.source))}" placeholder="035602…" style="width:110px" oninput="scheduleInput(this,'${esc(data.source)}')" onclick="event.stopPropagation()">
+      </div></div>
+      <div class="ic"><div class="lbl">Program / Result</div><div class="val mono">${prog}</div></div>
+      <div class="ic"><div class="lbl">Format tablă</div><div class="val mono">${displaySheet(data.sheetMaterial)}</div></div>
+      <div class="ic"><div class="lbl">Nr. coli</div><div class="val">${rpt}</div></div>${extraCells}
+    </div>${partsHTML}${thumbHTML}
+  </div>`;
+  container.appendChild(div);
+}
+
+function setNestFilter(f){
+  nestFilter=f;['all','l3030','bodor'].forEach(x=>document.getElementById('fn-'+x)?.classList.toggle('active',x===f));
+  renderNesturi();
+}
 function setPickFilter(f){pickFilter=f;document.querySelectorAll('.pk-filt').forEach(b=>b.classList.toggle('active',b.dataset.f===f));renderPicking();}
+
+/* ══ PICKING ══ */
 function renderPicking(){
   const el=document.getElementById('picking-main');
   if(!allPrograms.length){el.innerHTML='<div class="empty-state"><div class="ei">📋</div><div class="et">Încarcă fișiere de nesting.</div></div>';return;}
-
-  /* ── Picking Table (format rows) ── */
   const keys=uniqueSheetKeys();
   const pkRows=keys.map(key=>{
     const d=pickingData[key];const need=sheetNeed(key);
-    // Collect machines + schedules for this format
     const progs=allPrograms.filter(p=>sheetKey(p.sheetMaterial)===key);
     const machines=[...new Set(progs.map(p=>p.machine))].join(', ');
     const schedules=[...new Set(progs.map(p=>schedNr(p.source)).filter(Boolean))].join(', ');
     const progHint=progs.map(p=>`${p.programName}(×${effectiveNec(p)})`).join(', ');
     return `<tr data-key="${key}" data-nec="${need}">
-      <td>
-        <div class="pk-format">${displaySheet(allPrograms.find(p=>sheetKey(p.sheetMaterial)===key)?.sheetMaterial||'')}</div>
-        <div style="font-size:.67rem;color:var(--dim);margin-top:2px">${progHint}</div>
-      </td>
+      <td><div class="pk-format">${displaySheet(allPrograms.find(p=>sheetKey(p.sheetMaterial)===key)?.sheetMaterial||'')}</div><div style="font-size:.67rem;color:var(--dim);margin-top:2px">${progHint}</div></td>
       <td><div style="font-size:.72rem;color:var(--muted)">${machines}</div></td>
       <td><div style="font-family:var(--mono);font-size:.76rem;color:var(--accent)">${schedules||'<span style="color:var(--dim)">—</span>'}</div></td>
       <td><input type="text" class="pk-input code" value="${esc(d.sheetCode)}" placeholder="ex: MSS100236" data-key="${key}" oninput="pkCode(this)"></td>
@@ -1068,28 +1216,13 @@ function renderPicking(){
       <td id="pkd-${safeId(key)}" style="text-align:center;font-family:var(--mono);font-size:.8rem">${diffHtml(need,d.reservedQty)}</td>
       <td id="pks-${safeId(key)}">${statusBadge(need,d.reservedQty)}${d.surplusMotiv?`<div id="pksm-${safeId(key)}" style="font-size:.67rem;color:var(--info);font-style:italic;margin-top:2px">📎 ${esc(d.surplusMotiv)}</div>`:`<div id="pksm-${safeId(key)}"></div>`}</td>
       <td id="pkdt-${safeId(key)}" style="font-size:.72rem;color:var(--muted);white-space:nowrap;font-family:var(--mono)">${fmtReservedAt(d.reservedAt)}</td>
-    </tr>`;
-  }).join('');
-
-  /* ── Nesturi Încărcate: split active vs rezervate ── */
+    </tr>`;}).join('');
   const fp=pickFilter==='all'?allPrograms:allPrograms.filter(p=>p.type===pickFilter);
   const nestGroups={};
-  for(const p of fp){
-    const sk=sheetKey(p.sheetMaterial);const gk=`${p.source}|||${sk}`;
-    if(!nestGroups[gk]) nestGroups[gk]={type:p.type,machine:p.machine,source:p.source,sk,sheetMaterial:p.sheetMaterial,totalColi:0};
-    nestGroups[gk].totalColi+=effectiveNec(p);
-  }
-  // A nest-format is "rezervat" when reservedQty >= sheetNeed for that format
-  const isNestRezervat=gk=>{
-    const g=nestGroups[gk];if(!g) return false;
-    const d=pickingData[g.sk];const r=parseInt(d?.reservedQty)||0;
-    return r>0&&r>=sheetNeed(g.sk);
-  };
-
-  function nestRow(g,gk){
-    const d=pickingData[g.sk]||{};const sch=schedNr(g.source);
-    return `<tr>
-      <td><span class="mbadge ${g.type==='l3030'?'mb-l':'mb-b'}" style="font-size:.6rem">${g.type==='l3030'?'⚡ L3030':'🔵 Bodor'}</span></td>
+  for(const p of fp){const sk=sheetKey(p.sheetMaterial);const gk=`${p.source}|||${sk}`;if(!nestGroups[gk]) nestGroups[gk]={type:p.type,machine:p.machine,source:p.source,sk,sheetMaterial:p.sheetMaterial,totalColi:0};nestGroups[gk].totalColi+=effectiveNec(p);}
+  const isNestRez=gk=>{const g=nestGroups[gk];if(!g) return false;const d=pickingData[g.sk];const r=parseInt(d?.reservedQty)||0;return r>0&&r>=sheetNeed(g.sk);};
+  function nestRow(g,gk){const d=pickingData[g.sk]||{};const sch=schedNr(g.source);
+    return `<tr><td><span class="mbadge ${g.type==='l3030'?'mb-l':'mb-b'}" style="font-size:.6rem">${g.type==='l3030'?'⚡':'🔵'}</span></td>
       <td style="font-family:var(--mono);font-size:.78rem;font-weight:600">${esc(g.source)}</td>
       <td style="font-family:var(--mono);font-size:.76rem">${displaySheet(g.sheetMaterial)}</td>
       <td style="font-size:.76rem;color:var(--muted)">${g.machine}</td>
@@ -1098,64 +1231,45 @@ function renderPicking(){
       <td style="font-family:var(--mono);font-size:.72rem;color:var(--muted)">${esc(d.sheetCode||'')}</td>
       <td style="font-size:.72rem;color:var(--muted);white-space:nowrap">${fmtReservedAt(d.reservedAt)}</td>
       ${d.surplusMotiv?`<td style="font-size:.68rem;color:var(--info);font-style:italic">📎 ${esc(d.surplusMotiv)}</td>`:'<td style="color:var(--dim);font-size:.72rem">—</td>'}
-    </tr>`;
-  }
-
+    </tr>`;}
   function sortByPrio(entries){return entries.sort(([,a],[,b])=>{const pa=getPriority(a.source),pb=getPriority(b.source);if(!pa&&!pb) return 0;if(!pa) return 1;if(!pb) return -1;return pa-pb;});}
-  const activeGroups=sortByPrio(Object.entries(nestGroups).filter(([gk])=>!isNestRezervat(gk)));
-  const rezGroups=sortByPrio(Object.entries(nestGroups).filter(([gk])=>isNestRezervat(gk)));
-  const nsHead=`<thead><tr><th>Tip</th><th>Nest / Job</th><th>Format Tablă</th><th>Mașină</th><th>SCH #</th><th style="text-align:center">Coli</th><th>Cod Tablă</th><th>Data Rez.</th><th>Motiv suplim.</th></tr></thead>`;
+  const activeGroups=sortByPrio(Object.entries(nestGroups).filter(([gk])=>!isNestRez(gk)));
+  const rezGroups=sortByPrio(Object.entries(nestGroups).filter(([gk])=>isNestRez(gk)));
+  const nsHead=`<thead><tr><th>Tip</th><th>Nest/Job</th><th>Format</th><th>Mașină</th><th>SCH #</th><th style="text-align:center">Coli</th><th>Cod</th><th>Data Rez.</th><th>Motiv suplim.</th></tr></thead>`;
   const activeRows=activeGroups.map(([gk,g])=>nestRow(g,gk)).join('');
   const rezRows=rezGroups.map(([gk,g])=>nestRow(g,gk)).join('');
-
   el.innerHTML=`
     <div class="s-head">🗃 Picking Tablă</div>
-    <div class="sc pk-wrap">
-      <table class="pk">
-        <thead><tr><th>Format Tablă</th><th>Mașină</th><th>SCH #</th><th>Cod Tablă</th><th style="text-align:center">Necesar</th><th>Rezervat</th><th style="text-align:center">Diferență</th><th>Status</th><th>Data rezervării</th></tr></thead>
-        <tbody>${pkRows||'<tr><td colspan="9" style="padding:12px;text-align:center;color:var(--dim)">—</td></tr>'}</tbody>
-      </table>
-    </div>
-
-    <div class="s-head" style="margin-top:20px">📦 Nesturi în așteptare (${activeGroups.length})</div>
+    <div class="sc pk-wrap"><table class="pk">
+      <thead><tr><th>Format</th><th>Mașină</th><th>SCH #</th><th>Cod Tablă</th><th style="text-align:center">Necesar</th><th>Rezervat</th><th style="text-align:center">Δ</th><th>Status</th><th>Data rez.</th></tr></thead>
+      <tbody>${pkRows||'<tr><td colspan="9" style="padding:12px;text-align:center;color:var(--dim)">—</td></tr>'}</tbody>
+    </table></div>
+    <div class="s-head" style="margin-top:18px">📦 Nesturi în așteptare (${activeGroups.length})</div>
     <div class="filter-bar" style="margin-bottom:9px"><span class="lbl">Mașină:</span>${['all','l3030','bodor'].map(f=>`<button class="filt-btn pk-filt ${f!=='all'?f:''} ${pickFilter===f?'active':''}" data-f="${f}" onclick="setPickFilter('${f}')">${f==='all'?'Toate':f==='l3030'?'⚡ L3030':'🔵 Bodor'}</button>`).join('')}</div>
-    <div class="sc">
-      <table class="ns">${nsHead}<tbody>${activeRows||'<tr><td colspan="9" style="padding:12px;text-align:center;color:var(--dim);font-style:italic">Niciun nest în așteptare.</td></tr>'}</tbody></table>
-    </div>
-
-    ${rezGroups.length?`
-    <div class="s-head" style="margin-top:16px">✅ Rezervate integral (${rezGroups.length})</div>
-    <div class="sc">
-      <table class="ns">${nsHead}<tbody>${rezRows}</tbody></table>
-    </div>`:''}`;
+    <div class="sc"><table class="ns">${nsHead}<tbody>${activeRows||'<tr><td colspan="9" style="padding:12px;text-align:center;color:var(--dim);font-style:italic">—</td></tr>'}</tbody></table></div>
+    ${rezGroups.length?`<div class="s-head" style="margin-top:16px">✅ Rezervate (${rezGroups.length})</div><div class="sc"><table class="ns">${nsHead}<tbody>${rezRows}</tbody></table></div>`:''}`;
 }
 
-
-
-/* ══ Picking helpers ══ */
 function diffHtml(need,res){const r=parseInt(res)||0;if(!r) return '<span style="color:var(--dim)">—</span>';const d=r-need;const col=d===0?'var(--ok)':d>0?'var(--info)':'var(--warn)';return `<span style="color:${col};font-weight:700">${d===0?'0':d>0?'+'+d:d}</span>`;}
 function statusBadge(need,res){const r=parseInt(res)||0;if(!r) return '<span class="sbadge s-none">Necompletat</span>';if(r===need) return '<span class="sbadge s-ok">✓ OK</span>';if(r>need) return `<span class="sbadge s-sur">▲ Surplus +${r-need}</span>`;return `<span class="sbadge s-warn">⚠ Lipsă ${need-r}</span>`;}
 function pkCode(el){const key=el.dataset.key;ensurePick(key);pickingData[key].sheetCode=el.value;}
 let surplusPending=null;
 function pkRes(el){
-  const key=el.dataset.key;ensurePick(key);
-  const need=sheetNeed(key);const val=parseInt(el.value)||0;
+  const key=el.dataset.key;ensurePick(key);const need=sheetNeed(key);const val=parseInt(el.value)||0;
   if(val>0&&val>need){
     surplusPending={key,value:el.value,prevValue:pickingData[key].reservedQty,el};
-    document.getElementById('surplus-msg').innerHTML=`Rezervi <strong>${val} coli</strong>, dar necesarul din nesting este <strong>${need} coli</strong> (+${val-need} suplimentar).<br>Introduceți motivul:`;
+    document.getElementById('surplus-msg').innerHTML=`Rezervi <strong>${val} coli</strong>, dar necesarul este <strong>${need} coli</strong> (+${val-need}).<br>Introduceți motivul:`;
     document.getElementById('surplus-reason').value=pickingData[key].surplusMotiv||'';
     document.getElementById('surplus-reason').classList.remove('err');
     document.getElementById('surplus-hint').classList.remove('show');
     document.getElementById('surplus-modal').style.display='flex';
-    setTimeout(()=>document.getElementById('surplus-reason').focus(),50);
-    return;
+    setTimeout(()=>document.getElementById('surplus-reason').focus(),50);return;
   }
   pickingData[key].reservedQty=el.value;pickingData[key].reservedAt=el.value?new Date().toISOString():null;pickingData[key].surplusMotiv='';
   const d=document.getElementById('pkd-'+safeId(key));if(d) d.innerHTML=diffHtml(need,el.value);
   const s=document.getElementById('pks-'+safeId(key));if(s) s.innerHTML=statusBadge(need,el.value);
   const dtEl=document.getElementById('pkdt-'+safeId(key));if(dtEl) dtEl.textContent=fmtReservedAt(pickingData[key].reservedAt);
   const smEl=document.getElementById('pksm-'+safeId(key));if(smEl) smEl.textContent='';
-  // Refresh nesturi table if split changes
   renderPicking();
 }
 function surplusConfirm(){
@@ -1163,8 +1277,7 @@ function surplusConfirm(){
   if(!reason){document.getElementById('surplus-reason').classList.add('err');document.getElementById('surplus-hint').classList.add('show');return;}
   const{key,value}=surplusPending;ensurePick(key);
   pickingData[key].reservedQty=value;pickingData[key].reservedAt=new Date().toISOString();pickingData[key].surplusMotiv=reason;
-  document.getElementById('surplus-modal').style.display='none';surplusPending=null;
-  renderPicking();
+  document.getElementById('surplus-modal').style.display='none';surplusPending=null;renderPicking();
 }
 function surplusCancel(){
   if(surplusPending?.el) surplusPending.el.value=surplusPending.prevValue||'';
@@ -1173,7 +1286,7 @@ function surplusCancel(){
   surplusPending=null;
 }
 
-/* ══ Raportare ══ */
+/* ══ RAPORTARE ══ */
 function renderRaportare(){
   const el=document.getElementById('raportare-main');
   if(!allPrograms.length){el.innerHTML='<div class="empty-state"><div class="ei">📊</div><div class="et">Încarcă fișiere de nesting.</div></div>';return;}
@@ -1206,68 +1319,65 @@ function renderRaportare(){
   const th=(c,label)=>`<th onclick="rapSetSort('${c}')">${label}${si(c)}</th>`;
   const machOpts=machines.map(m=>`<option value="${esc(m)}" ${m===rapMachine?'selected':''}>${esc(m)}</option>`).join('');
   const fmtOpts=formats.map(k=>`<option value="${esc(k)}" ${k===rapFormat?'selected':''}>${k==='Toate'?'Toate':displaySheet(allPrograms.find(p=>sheetKey(p.sheetMaterial)===k)?.sheetMaterial||'')}</option>`).join('');
-  function buildActiveRows(list){
-    return list.map(p=>{
-      const ok=opKey(p);const sk=sheetKey(p.sheetMaterial);const d=opData[ok]||{coliDebitate:'',motivDepasire:''};
-      const nec=effectiveNec(p);const deb=parseInt(d.coliDebitate)||0;
-      const pct=nec>0?Math.min(100,Math.round(deb/nec*100)):0;
-      const c=deb===0?'var(--dim)':deb>=nec?'var(--ok)':'var(--accent)';
-      const sid=safeId(ok);const isL=p.type==='l3030';const isExp=expandedRows.has(ok);
-      return `<tr class="data-row" onclick="toggleDetail('${ok.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">
-        <td><div class="tdi" style="text-align:center;font-family:var(--mono);font-weight:700;color:var(--accent)">${getPriority(p.source)||'<span style=\"color:var(--dim)\">—</span>'}</div></td>
-        <td><div class="tdi"><span class="mbadge ${isL?'mb-l':'mb-b'}" style="font-size:.6rem">${isL?'⚡':'🔵'}</span></div></td>
-        <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem;color:var(--muted)">${esc(p.source)}</div></td>
-        <td><div class="tdi" style="font-family:var(--mono);font-size:.77rem;font-weight:600">${esc(p.programName)}</div></td>
-        <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem">${displaySheet(p.sheetMaterial)}</div></td>
-        <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem;color:var(--muted)">${esc(pickingData[sk]?.sheetCode||'')}</div></td>
-        <td onclick="event.stopPropagation()"><div class="tdi" style="min-width:90px"><input class="sched-inp" data-src="${esc(p.source)}" value="${esc(schedNr(p.source))}" placeholder="SCH #" style="width:90px" oninput="scheduleInput(this,'${esc(p.source)}')" onclick="event.stopPropagation()"></div></td>
-        <td onclick="event.stopPropagation()"><div class="tdi" style="min-width:130px">
-          <div class="prog-bar-wrap">
-            <div class="prog-bar"><div class="prog-bar-fill" id="pbf-${sid}" style="width:${pct}%;background:${c}"></div></div>
-            <input type="number" class="pk-input qty" style="width:58px;padding:3px 5px;font-size:.74rem" value="${esc(d.coliDebitate)}" min="0" data-ok="${ok.replace(/"/g,'&quot;')}" data-nec="${nec}" data-sid="${sid}" data-prev="${esc(d.coliDebitate)}" oninput="rapDebInput(this)" onclick="event.stopPropagation()">
-            <span id="pbl-${sid}" class="prog-label" style="color:${c}">${deb}/${nec}</span>
-          </div>
-        </div></td>
-        <td onclick="event.stopPropagation()"><div class="tdi" style="min-width:130px">
-          <div style="display:flex;align-items:center;gap:4px">
-            <input type="number" class="pk-input qty" style="width:54px;text-align:center;padding:3px 5px;font-size:.74rem;color:var(--accent)" value="${nec}" min="1" data-ok="${ok}" data-sid="${sid}" data-orig="${p.numOfSheet}" oninput="rapNecInput(this)" onclick="event.stopPropagation()">
-            ${nec!==p.numOfSheet?`<span title="Original: ${p.numOfSheet}" style="font-size:.61rem;color:var(--dim)">↩${p.numOfSheet}</span>`:''}
-          </div>
-        </div></td>
-      </tr>
-      <tr class="det-row" id="det-${sid}" style="display:${isExp?'table-row':'none'}">
-        <td colspan="8">${buildDetail(p)}</td>
-      </tr>`;
-    }).join('');
-  }
-  function buildRealRows(list){
-    return list.map(p=>{
-      const ok=opKey(p);const d=opData[ok]||{};const nec=effectiveNec(p);const deb=parseInt(d.coliDebitate)||0;
-      const over=deb>nec;const isL=p.type==='l3030';const sid=safeId(ok);const isExp=expandedRows.has(ok);
-      const badge=over?`<span class="real-badge real-over">▲ +${deb-nec}</span>`:`<span class="real-badge real-ok">✓ Complet</span>`;
-      return `<tr class="data-row" onclick="toggleDetail('${ok.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">
-        <td><div class="tdi" style="text-align:center;font-family:var(--mono);font-weight:700;color:var(--accent)">${getPriority(p.source)||'<span style=\"color:var(--dim)\">—</span>'}</div></td>
-        <td><div class="tdi"><span class="mbadge ${isL?'mb-l':'mb-b'}" style="font-size:.6rem">${isL?'⚡':'🔵'}</span></div></td>
-        <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem;color:var(--muted)">${esc(p.source)}</div></td>
-        <td><div class="tdi" style="font-family:var(--mono);font-size:.77rem;font-weight:600">${esc(p.programName)}</div></td>
-        <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem">${displaySheet(p.sheetMaterial)}</div></td>
-        <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem;color:var(--muted)">${esc(pickingData[sheetKey(p.sheetMaterial)]?.sheetCode||'')}</div></td>
-        <td onclick="event.stopPropagation()"><div class="tdi"><input class="sched-inp" data-src="${esc(p.source)}" value="${esc(schedNr(p.source))}" placeholder="SCH #" style="width:90px" oninput="scheduleInput(this,'${esc(p.source)}')" onclick="event.stopPropagation()"></div></td>
-        <td style="text-align:center"><div class="tdi" style="display:flex;align-items:center;gap:7px"><strong style="font-family:var(--mono);color:${over?'var(--warn)':'var(--ok)'}">${deb}</strong>${badge}</div></td>
-        ${hasRealMotiv?`<td><div class="tdi motiv-cell">${over?esc(d.motivDepasire||'—'):'—'}</div></td>`:''}
-      </tr>
-      <tr class="det-row" id="det-${sid}" style="display:${isExp?'table-row':'none'}">
-        <td colspan="${hasRealMotiv?8:7}">${buildDetail(p)}</td>
-      </tr>`;
-    }).join('');
-  }
-  const realColspan=hasRealMotiv?8:7;
+
+  function buildActiveRows(list){return list.map(p=>{
+    const ok=opKey(p);const sk=sheetKey(p.sheetMaterial);const d=opData[ok]||{coliDebitate:'',motivDepasire:''};
+    const nec=effectiveNec(p);const deb=parseInt(d.coliDebitate)||0;
+    const pct=nec>0?Math.min(100,Math.round(deb/nec*100)):0;
+    const clr=deb===0?'var(--dim)':deb>=nec?'var(--ok)':'var(--accent)';
+    const sid=safeId(ok);const isL=p.type==='l3030';const isExp=expandedRows.has(ok);
+    return `<tr class="data-row" onclick="toggleDetail('${ok.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">
+      <td><div class="tdi" style="text-align:center;font-family:var(--mono);font-weight:700;color:var(--accent)">${getPriority(p.source)||'<span style="color:var(--dim)">—</span>'}</div></td>
+      <td><div class="tdi"><span class="mbadge ${isL?'mb-l':'mb-b'}" style="font-size:.6rem">${isL?'⚡':'🔵'}</span></div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem;color:var(--muted)">${esc(p.source)}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.77rem;font-weight:600">${esc(p.programName)}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem">${displaySheet(p.sheetMaterial)}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem;color:var(--muted)">${esc(pickingData[sk]?.sheetCode||'')}</div></td>
+      <td onclick="event.stopPropagation()"><div class="tdi"><input class="sched-inp" data-src="${esc(p.source)}" value="${esc(schedNr(p.source))}" placeholder="SCH #" style="width:90px" oninput="scheduleInput(this,'${esc(p.source)}')" onclick="event.stopPropagation()"></div></td>
+      <td onclick="event.stopPropagation()"><div class="tdi" style="min-width:130px">
+        <div class="prog-bar-wrap">
+          <div class="prog-bar"><div class="prog-bar-fill" id="pbf-${sid}" style="width:${pct}%;background:${clr}"></div></div>
+          <input type="number" class="pk-input qty" style="width:58px;padding:3px 5px;font-size:.74rem" value="${esc(d.coliDebitate)}" min="0" data-ok="${ok.replace(/"/g,'&quot;')}" data-nec="${nec}" data-sid="${sid}" data-prev="${esc(d.coliDebitate)}" oninput="rapDebInput(this)" onclick="event.stopPropagation()">
+          <span id="pbl-${sid}" class="prog-label" style="color:${clr}">${deb}/${nec}</span>
+        </div>
+      </div></td>
+      <td onclick="event.stopPropagation()"><div class="tdi">
+        <div style="display:flex;align-items:center;gap:4px">
+          <input type="number" class="pk-input qty" style="width:54px;text-align:center;padding:3px 5px;font-size:.74rem;color:var(--accent)" value="${nec}" min="1" data-ok="${ok}" data-sid="${sid}" data-orig="${p.numOfSheet}" oninput="rapNecInput(this)" onclick="event.stopPropagation()">
+          ${nec!==p.numOfSheet?`<span title="Original: ${p.numOfSheet}" style="font-size:.61rem;color:var(--dim)">↩${p.numOfSheet}</span>`:''}
+        </div>
+      </div></td>
+    </tr>
+    <tr class="det-row" id="det-${sid}" style="display:${isExp?'table-row':'none'}">
+      <td colspan="9">${buildDetail(p)}</td>
+    </tr>`;}).join('');}
+
+  function buildRealRows(list){return list.map(p=>{
+    const ok=opKey(p);const d=opData[ok]||{};const nec=effectiveNec(p);const deb=parseInt(d.coliDebitate)||0;
+    const over=deb>nec;const isL=p.type==='l3030';const sid=safeId(ok);const isExp=expandedRows.has(ok);
+    const badge=over?`<span class="real-badge real-over">▲ +${deb-nec}</span>`:`<span class="real-badge real-ok">✓ Complet</span>`;
+    return `<tr class="data-row" onclick="toggleDetail('${ok.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">
+      <td><div class="tdi" style="text-align:center;font-family:var(--mono);font-weight:700;color:var(--accent)">${getPriority(p.source)||'<span style="color:var(--dim)">—</span>'}</div></td>
+      <td><div class="tdi"><span class="mbadge ${isL?'mb-l':'mb-b'}" style="font-size:.6rem">${isL?'⚡':'🔵'}</span></div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem;color:var(--muted)">${esc(p.source)}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.77rem;font-weight:600">${esc(p.programName)}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem">${displaySheet(p.sheetMaterial)}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem;color:var(--muted)">${esc(pickingData[sheetKey(p.sheetMaterial)]?.sheetCode||'')}</div></td>
+      <td><div class="tdi"><span style="font-family:var(--mono);font-size:.76rem;color:var(--accent)">${esc(schedNr(p.source))||'—'}</span></div></td>
+      <td><div class="tdi" style="display:flex;align-items:center;gap:7px"><strong style="font-family:var(--mono);color:${over?'var(--warn)':'var(--ok)'}">${deb}</strong>${badge}</div></td>
+      ${hasRealMotiv?`<td><div class="tdi motiv-cell">${over?esc(d.motivDepasire||'—'):'—'}</div></td>`:''}
+    </tr>
+    <tr class="det-row" id="det-${sid}" style="display:${isExp?'table-row':'none'}">
+      <td colspan="${hasRealMotiv?9:8}">${buildDetail(p)}</td>
+    </tr>`;}).join('');}
+
   const realizedSection=realized.length?`
     <div class="s-head" style="margin-top:18px">✅ Realizări (${realized.length})</div>
     <div class="rap-wrap"><table class="rap">
-      <thead><tr>${th('prio','Prio.')}${th('machine','Mașină')}${th('source','Nest/Job')}${th('program','Subnest')}${th('sheet','Format')}${th('cod','Cod Tablă')}${th('sch','Schedule No.')}${th('deb','Deb.')}${hasRealMotiv?'<th>Motiv depășire</th>':''}</tr></thead>
+      <thead><tr>${th('prio','Prio.')}${th('machine','Mașină')}${th('source','Nest/Job')}${th('program','Subnest')}${th('sheet','Format')}${th('cod','Cod')}${th('sch','Schedule No.')}${th('deb','Deb.')}${hasRealMotiv?'<th>Motiv</th>':''}</tr></thead>
       <tbody>${buildRealRows(realized)}</tbody>
     </table></div>`:'';
+
   el.innerHTML=`
     <div class="stat-panel" id="stat-panel"></div>
     <div class="rap-filters">
@@ -1276,15 +1386,16 @@ function renderRaportare(){
       <select class="rs rap-format" onchange="rapFormatChange(this.value)">${fmtOpts}</select>
       <span style="margin-left:auto;font-size:.72rem;color:var(--muted)">${filtered.length} linii • <strong style="color:var(--text)">${totNec} nec.</strong> • <strong style="color:var(--ok)">${totDeb} deb.</strong></span>
     </div>
-    <div class="s-head">⚙ Progres Debitare — Linii active (${active.length})</div>
+    <div class="s-head">⚙ Progres Debitare (${active.length})</div>
     <div class="rap-wrap"><table class="rap">
-      <thead><tr>${th('prio','Prio.')}${th('machine','Mașină')}${th('source','Nest/Job')}${th('program','Subnest/Program')}${th('sheet','Format')}${th('cod','Cod Tablă')}${th('sch','Schedule No.')}${th('deb','Coli Debitate')}${th('coli','Coli Nec.')}</tr></thead>
-      <tbody>${active.length?buildActiveRows(active):'<tr><td colspan="8" style="padding:16px;text-align:center;color:var(--dim)">Toate liniile au fost realizate.</td></tr>'}</tbody>
+      <thead><tr>${th('prio','Prio.')}${th('machine','Mașină')}${th('source','Nest/Job')}${th('program','Subnest')}${th('sheet','Format')}${th('cod','Cod')}${th('sch','Schedule No.')}${th('deb','Coli Debitate')}${th('coli','Coli Nec.')}</tr></thead>
+      <tbody>${active.length?buildActiveRows(active):'<tr><td colspan="9" style="padding:16px;text-align:center;color:var(--dim)">Toate liniile realizate.</td></tr>'}</tbody>
       <tfoot><tr><td colspan="7" style="text-align:right;color:var(--muted);font-size:.71rem">TOTAL:</td><td style="text-align:center;color:var(--ok)">${totDeb}</td><td style="text-align:center;color:var(--accent)">${totNec}</td></tr></tfoot>
     </table></div>
     ${realizedSection}`;
   renderStatPanel();
 }
+
 function rapSearchChange(v){rapSearch=v;renderRaportare();const si=document.getElementById('raportare-main')?.querySelector('.rap-search');if(si){si.focus();try{si.setSelectionRange(v.length,v.length);}catch(_){}}}
 function rapMachineChange(v){rapMachine=v;renderRaportare();}
 function rapFormatChange(v){rapFormat=v;renderRaportare();}
@@ -1300,81 +1411,12 @@ function rapDebInput(el){
   const wasComplete=isCompleted({numOfSheet:nec,source:ok.split('|||')[0],programName:ok.split('|||')[1]});
   opData[ok].coliDebitate=el.value;if(val<nec) opData[ok].motivDepasire='';
   el.dataset.prev=el.value;
-  const isNowComplete=val>0&&val>=nec;
-  if(wasComplete!==isNowComplete){setTimeout(()=>renderRaportare(),50);return;}
-  const c=val===0?'var(--dim)':val===nec?'var(--ok)':'var(--accent)';
+  if(wasComplete!==(val>0&&val>=nec)){setTimeout(()=>renderRaportare(),50);return;}
+  const clr=val===0?'var(--dim)':val===nec?'var(--ok)':'var(--accent)';
   const pct=nec>0?Math.min(100,Math.round(val/nec*100)):0;
-  const fill=document.getElementById('pbf-'+sid);if(fill){fill.style.width=pct+'%';fill.style.background=c;}
-  const lbl=document.getElementById('pbl-'+sid);if(lbl){lbl.textContent=`${val}/${nec}`;lbl.style.color=c;}
+  const fill=document.getElementById('pbf-'+sid);if(fill){fill.style.width=pct+'%';fill.style.background=clr;}
+  const lbl=document.getElementById('pbl-'+sid);if(lbl){lbl.textContent=`${val}/${nec}`;lbl.style.color=clr;}
 }
-function showOcModal(val,nec,existingMotiv){
-  document.getElementById('oc-msg').innerHTML=`Ați introdus <strong>${val} coli</strong>, dar necesarul normat este de <strong>${nec} coli</strong> (+${val-nec} față de normă).<br>Introduceți motivul depășirii:`;
-  document.getElementById('oc-reason').value=existingMotiv||'';
-  document.getElementById('oc-reason').classList.remove('err');
-  document.getElementById('oc-hint').classList.remove('show');
-  document.getElementById('oc-modal').style.display='flex';
-  setTimeout(()=>document.getElementById('oc-reason').focus(),50);
-}
-function ocConfirm(){
-  const reason=document.getElementById('oc-reason').value.trim();
-  if(!reason){document.getElementById('oc-reason').classList.add('err');document.getElementById('oc-hint').classList.add('show');return;}
-  const{ok,value,nec,sid}=ocPending;
-  opData[ok].coliDebitate=value;opData[ok].motivDepasire=reason;opData[ok].completedAt=new Date().toISOString();
-  document.getElementById('oc-modal').style.display='none';ocPending=null;
-  renderRaportare();
-}
-function ocCancel(){
-  if(ocPending?.el) ocPending.el.value=ocPending.prevValue||'';
-  document.getElementById('oc-modal').style.display='none';
-  document.getElementById('oc-reason').classList.remove('err');document.getElementById('oc-hint').classList.remove('show');
-  ocPending=null;
-}
-document.getElementById('oc-reason').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.ctrlKey) ocConfirm();if(e.key==='Escape') ocCancel();});
-document.getElementById('surplus-reason').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.ctrlKey) surplusConfirm();if(e.key==='Escape') surplusCancel();});
-document.getElementById('sched-inp-modal').addEventListener('keydown',e=>{if(e.key==='Enter') schedConfirm();if(e.key==='Escape') schedCancel();});
-
-function toggleDetail(ok){const sid=safeId(ok);const row=document.getElementById('det-'+sid);if(!row) return;const hidden=row.style.display==='none'||!row.style.display;row.style.display=hidden?'table-row':'none';if(hidden) expandedRows.add(ok);else expandedRows.delete(ok);}
-
-function buildDetail(p){
-  const ok=opKey(p);const sk=sheetKey(p.sheetMaterial);const d=opData[ok]||{};
-  const cod=pickingData[sk]?.sheetCode||'—';const totalBuc=p.parts.reduce((s,x)=>s+x.pcs,0);const isL=p.type==='l3030';
-  const motiv=d.motivDepasire;const sch=schedNr(p.source);
-  const metaItems=[
-    {k:'Mașină',v:p.machine},{k:'Nest / Job',v:p.source},{k:'Program / Result',v:p.programName},
-    {k:'Format tablă',v:displaySheet(p.sheetMaterial)},{k:'Cod tablă',v:cod},{k:'SCH #',v:sch||'—'},
-    {k:'Coli necesare',v:String(effectiveNec(p))},{k:'Coli debitate',v:d.coliDebitate||'—'},
-    ...(motiv?[{k:'Motiv depășire',v:motiv,warn:true}]:[]),
-    {k:'Tipuri piese',v:String(p.parts.length)},{k:'Total buc.',v:String(totalBuc)},
-    ...(p.plateNum?[{k:'PlateNum',v:p.plateNum}]:[])
-  ].map(m=>`<div class="dm"><div class="k">${m.k}</div><div class="v ${m.warn?'warn':''}">${esc(m.v)}</div></div>`).join('');
-  let partsSection='';
-  if(p.parts.length){
-    const hasImg=p.parts.some(x=>x.imageDataUrl);
-    if(hasImg){partsSection=`<div class="sec-hd">Piese (${p.parts.length})</div><div class="parts-grid">${p.parts.map(x=>`<div class="part-thumb ${x.imageDataUrl?'':'no-img'}">${x.imageDataUrl?`<img src="${x.imageDataUrl}" loading="lazy">`:'<div class="no-img-ico">✂</div>'}<div class="pa">${esc(x.alias)}</div><div class="pp">${x.pcs} buc.</div></div>`).join('')}</div>`;}
-    else{const rows=p.parts.map((x,i)=>`<tr><td style="color:var(--dim);font-size:.69rem;padding:4px 9px">${i+1}</td><td style="font-family:var(--mono);font-size:.74rem;padding:4px 9px">${esc(x.alias)}</td><td style="padding:4px 9px"><span class="pcs-pill">${x.pcs}</span></td>${x.drawingName?`<td style="font-family:var(--mono);font-size:.7rem;color:var(--muted);padding:4px 9px">${esc(x.drawingName)}</td>`:''}</tr>`).join('');partsSection=`<div class="sec-hd">Piese (${p.parts.length})</div><div class="parts-wrap"><table class="pt"><thead><tr><th>#</th><th>Alias</th><th>Buc.</th>${p.parts.some(x=>x.drawingName)?'<th>Drawing Name</th>':''}</tr></thead><tbody>${rows}</tbody></table></div>`;}
-  }
-  const thumbSection=p.thumbnail?`<div class="sec-hd" style="margin-top:12px">Preview placă</div><img src="${p.thumbnail}" style="max-width:100%;border-radius:6px;border:1px solid var(--border)">`:'';
-  return `<div class="det-box"><div class="det-meta">${metaItems}</div>${partsSection}${thumbSection}</div>`;
-}
-
-function fmtReservedAt(iso){
-  if(!iso) return '—';
-  const d=new Date(iso);
-  const dd=String(d.getDate()).padStart(2,'0'),mm=String(d.getMonth()+1).padStart(2,'0'),yy=d.getFullYear();
-  const hh=String(d.getHours()).padStart(2,'0'),mn=String(d.getMinutes()).padStart(2,'0');
-  return `${dd}.${mm}.${yy} ${hh}:${mn}`;
-}
-function ensureSchedule(src){if(!scheduleData[src]) scheduleData[src]={schedNo:'',priority:0};}
-function getSchedNo(src){return scheduleData[src]?.schedNo||'';}
-function getPriority(src){return parseInt(scheduleData[src]?.priority)||0;}
-function schedNr(src){return getSchedNo(src);}
-function scheduleInput(el,src){
-  ensureSchedule(src);scheduleData[src].schedNo=el.value;
-  document.querySelectorAll('.sched-inp[data-src]').forEach(i=>{if(i!==el&&i.dataset.src===src) i.value=el.value;});
-  if(activeTab==='picking') renderPicking();
-  if(activeTab==='raportare') renderRaportare();
-}
-
 function rapNecInput(el){
   const ok=el.dataset.ok;const origNec=parseInt(el.dataset.orig)||0;const newNec=parseInt(el.value)||0;
   if(!opData[ok]) opData[ok]={coliDebitate:'',motivDepasire:'',completedAt:null,numOfSheetOverride:null};
@@ -1392,19 +1434,54 @@ function rapNecInput(el){
   if(activeTab==='picking') renderPicking();
 }
 
-function deleteNest(src){
-  if(!confirm('Șterge nestul "'+src+'" din listă?')) return;
-  for(let i=allPrograms.length-1;i>=0;i--){if(allPrograms[i].source===src) allPrograms.splice(i,1);}
-  delete scheduleData[src];
-  // Curăță expandedRows pentru sursa ștearsă
-  [...expandedRows].forEach(k=>{if(k.startsWith(src+'|||')) expandedRows.delete(k);});
-  refreshStats();updateTabCounts();
-  renderNesturi();if(activeTab==='picking') renderPicking();if(activeTab==='raportare') renderRaportare();
+function showOcModal(val,nec,existingMotiv){
+  document.getElementById('oc-msg').innerHTML=`Ați introdus <strong>${val} coli</strong>, dar necesarul normat este <strong>${nec} coli</strong>.<br>Introduceți motivul:`;
+  document.getElementById('oc-reason').value=existingMotiv||'';
+  document.getElementById('oc-reason').classList.remove('err');
+  document.getElementById('oc-hint').classList.remove('show');
+  document.getElementById('oc-modal').style.display='flex';
+  setTimeout(()=>document.getElementById('oc-reason').focus(),50);
 }
-function setPriority(src,val){
-  ensureSchedule(src);scheduleData[src].priority=parseInt(val)||0;
-  if(activeTab==='picking') renderPicking();if(activeTab==='raportare') renderRaportare();
+function ocConfirm(){
+  const reason=document.getElementById('oc-reason').value.trim();
+  if(!reason){document.getElementById('oc-reason').classList.add('err');document.getElementById('oc-hint').classList.add('show');return;}
+  const{ok,value}=ocPending;
+  opData[ok].coliDebitate=value;opData[ok].motivDepasire=reason;opData[ok].completedAt=new Date().toISOString();
+  document.getElementById('oc-modal').style.display='none';ocPending=null;
+  renderRaportare();
 }
+function ocCancel(){
+  if(ocPending?.el) ocPending.el.value=ocPending.prevValue||'';
+  document.getElementById('oc-modal').style.display='none';
+  document.getElementById('oc-reason').classList.remove('err');document.getElementById('oc-hint').classList.remove('show');
+  ocPending=null;
+}
+
+function toggleDetail(ok){const sid=safeId(ok);const row=document.getElementById('det-'+sid);if(!row) return;const hidden=row.style.display==='none'||!row.style.display;row.style.display=hidden?'table-row':'none';if(hidden) expandedRows.add(ok);else expandedRows.delete(ok);}
+
+function buildDetail(p){
+  const ok=opKey(p);const sk=sheetKey(p.sheetMaterial);const d=opData[ok]||{};
+  const cod=pickingData[sk]?.sheetCode||'—';const totalBuc=p.parts.reduce((s,x)=>s+x.pcs,0);const isL=p.type==='l3030';
+  const motiv=d.motivDepasire;const sch=schedNr(p.source);
+  const metaItems=[
+    {k:'Mașină',v:p.machine},{k:'Nest/Job',v:p.source},{k:'Schedule No.',v:sch||'—'},{k:'Program/Result',v:p.programName},
+    {k:'Format',v:displaySheet(p.sheetMaterial)},{k:'Cod',v:cod},
+    {k:'Coli necesare',v:String(effectiveNec(p))},{k:'Coli debitate',v:d.coliDebitate||'—'},
+    ...(motiv?[{k:'Motiv depășire',v:motiv,warn:true}]:[]),
+    {k:'Tipuri piese',v:String(p.parts.length)},{k:'Total buc.',v:String(totalBuc)},
+    ...(p.plateNum?[{k:'PlateNum',v:p.plateNum}]:[])
+  ].map(m=>`<div class="dm"><div class="k">${m.k}</div><div class="v ${m.warn?'warn':''}">${esc(m.v)}</div></div>`).join('');
+  let partsSection='';
+  if(p.parts.length){
+    const hasImg=p.parts.some(x=>x.imageDataUrl||x.imageUrl);
+    if(hasImg){partsSection=`<div class="sec-hd">Piese (${p.parts.length})</div><div class="parts-grid">${p.parts.map(x=>{const imgSrc=x.imageUrl||x.imageDataUrl;return `<div class="part-thumb ${imgSrc?'':'no-img'}">${imgSrc?`<img src="${imgSrc}" loading="lazy">`:'<div class="no-img-ico">✂</div>'}<div class="pa">${esc(x.alias)}</div><div class="pp">${x.pcs} buc.</div></div>`;}).join('')}</div>`;}
+    else{const rows=p.parts.map((x,i)=>`<tr><td style="color:var(--dim);font-size:.69rem;padding:4px 9px">${i+1}</td><td style="font-family:var(--mono);font-size:.74rem;padding:4px 9px">${esc(x.alias)}</td><td style="padding:4px 9px"><span class="pcs-pill">${x.pcs}</span></td></tr>`).join('');partsSection=`<div class="sec-hd">Piese (${p.parts.length})</div><div class="parts-wrap"><table class="pt"><thead><tr><th>#</th><th>Alias</th><th>Buc.</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
+  }
+  const thumbSrc=p.thumbnailUrl||p.thumbnail;
+  const thumbSection=thumbSrc?`<div class="sec-hd" style="margin-top:12px">Preview</div><img src="${thumbSrc}" style="max-width:100%;border-radius:6px;border:1px solid var(--border)">`:'';
+  return `<div class="det-box"><div class="det-meta">${metaItems}</div>${partsSection}${thumbSection}</div>`;
+}
+
 function appendLoadingCard(filename){
   const container=document.getElementById('cards');const div=document.createElement('div');div.className='card open';
   div.innerHTML=`<div class="card-head"><span class="mbadge mb-b">🔵 Bodor</span><span class="card-prog">${esc(filename)}</span></div><div class="card-body"><div style="padding:12px;text-align:center;color:var(--muted);font-size:.8rem">⏳ Procesare PDF…</div></div>`;
@@ -1412,127 +1489,155 @@ function appendLoadingCard(filename){
 }
 function appendError(msg){const div=document.createElement('div');div.className='err-banner';div.textContent='⚠️ '+msg;document.getElementById('cards').appendChild(div);}
 
-/* ══ Init ══ */
+/* ══ Init timer ══ */
 stat.runStart=Date.now();
 startStatTimer();
 </script>
-</body>
-</html>
 
 <script>
 /* ═══════════════════════════════════════════════════════════
-   AUTH + USER MANAGEMENT + SUPABASE SYNC
+   CONFIG + AUTH + SUPABASE SYNC
    ═══════════════════════════════════════════════════════════ */
 
-// ── Helpers ──
+const CONFIG = {
+  SUPABASE_URL:         'https://YOUR_PROJECT.supabase.co',
+  SUPABASE_ANON_KEY:    'YOUR_ANON_KEY',
+  SUPABASE_SERVICE_KEY: 'YOUR_SERVICE_ROLE_KEY'
+};
+
+const LS = { url:'nv_sb_url', anon:'nv_sb_anon', service:'nv_sb_service' };
+
+let sb=null, sbAdmin=null, currentUser=null, currentProfile=null;
+let _realtimeSubs=[], _oasProcessing=false;
+
+function loadLocalConfig(){
+  return {
+    url:     localStorage.getItem(LS.url)     || CONFIG.SUPABASE_URL,
+    anon:    localStorage.getItem(LS.anon)    || CONFIG.SUPABASE_ANON_KEY,
+    service: localStorage.getItem(LS.service) || CONFIG.SUPABASE_SERVICE_KEY
+  };
+}
+function isPlaceholder(v){ return !v||v.startsWith('YOUR_')||v.includes('YOUR_PROJECT'); }
+function isConfigValid(cfg){ return cfg.url&&!isPlaceholder(cfg.url)&&cfg.anon&&!isPlaceholder(cfg.anon); }
+
+function initSupabaseWith(url,anon,service){
+  try{
+    sb = window.supabase.createClient(url,anon,{auth:{storageKey:'nv_auth',persistSession:true,autoRefreshToken:true}});
+    sbAdmin = service&&!isPlaceholder(service)
+      ? window.supabase.createClient(url,service,{auth:{storageKey:'nv_admin',persistSession:false,autoRefreshToken:false}})
+      : null;
+    return true;
+  }catch(e){console.warn('Supabase init:',e.message);return false;}
+}
+
+/* ── CONFIG WIZARD ── */
+function cfgValidate(inp,type){
+  const v=inp.value.trim();
+  if(type==='url'){inp.classList.toggle('valid',v.includes('supabase.co'));inp.classList.toggle('invalid',v.length>10&&!v.includes('supabase'));}
+  else if(type==='key'){inp.classList.toggle('valid',v.startsWith('eyJ'));inp.classList.toggle('invalid',v.length>10&&!v.startsWith('eyJ'));}
+}
+async function cfgTest(){
+  const url=(document.getElementById('cfg-url').value||'').trim().replace(/\/$/,'');
+  const anon=(document.getElementById('cfg-anon').value||'').trim();
+  const res=document.getElementById('cfg-test-result');
+  if(!url||!anon){res.textContent='⚠ Completează URL și Anon Key.';res.style.color='var(--warn)';return;}
+  res.textContent='Se testează...';res.style.color='var(--muted)';
+  try{
+    const testClient=window.supabase.createClient(url,anon);
+    const{error}=await testClient.from('profiles').select('id').limit(1);
+    if(error&&!error.message.includes('does not exist')&&error.code!=='PGRST116') throw new Error(error.message);
+    res.textContent='✓ Conexiune reușită!';res.style.color='var(--ok)';
+  }catch(e){res.textContent='✗ '+e.message;res.style.color='var(--warn)';}
+}
+function saveConfig(){
+  const url=(document.getElementById('cfg-url').value||'').trim().replace(/\/$/,'');
+  const anon=(document.getElementById('cfg-anon').value||'').trim();
+  const service=(document.getElementById('cfg-service').value||'').trim();
+  const errEl=document.getElementById('cfg-err');
+  if(!url||!url.includes('supabase')){errEl.textContent='URL Supabase invalid.';errEl.classList.add('show');return;}
+  if(!anon||!anon.startsWith('eyJ')){errEl.textContent='Anon Key invalid (trebuie să înceapă cu eyJ...).';errEl.classList.add('show');return;}
+  errEl.classList.remove('show');
+  localStorage.setItem(LS.url,url);localStorage.setItem(LS.anon,anon);
+  if(service&&service.startsWith('eyJ')) localStorage.setItem(LS.service,service);
+  else localStorage.removeItem(LS.service);
+  if(initSupabaseWith(url,anon,service)){
+    document.getElementById('config-screen').style.display='none';
+    document.getElementById('auth-screen').style.display='flex';
+    setupAuthListener();
+  }else{errEl.textContent='Inițializare eșuată.';errEl.classList.add('show');}
+}
+function showConfigScreen(){
+  const cfg=loadLocalConfig();
+  document.getElementById('cfg-url').value=isPlaceholder(cfg.url)?'':cfg.url;
+  document.getElementById('cfg-anon').value=isPlaceholder(cfg.anon)?'':cfg.anon;
+  document.getElementById('cfg-service').value=isPlaceholder(cfg.service)?'':cfg.service||'';
+  document.getElementById('cfg-test-result').textContent='';
+  document.getElementById('cfg-err').classList.remove('show');
+  document.getElementById('auth-screen').style.display='none';
+  document.getElementById('config-screen').style.display='flex';
+}
+
+/* ── AUTH HELPERS ── */
 function roleBadge(role){
   const map={developer:'role-dev',admin:'role-admin',operator:'role-op',picker:'role-pick'};
   const lbl={developer:'Developer',admin:'Admin',operator:'Operator',picker:'Picker'};
   return `<span class="role-badge-sm ${map[role]||''}">${lbl[role]||role}</span>`;
 }
-function canImportNests(){return ['developer','admin','operator'].includes(currentProfile?.role);}
-function canRaportare(){return ['developer','admin','operator'].includes(currentProfile?.role);}
-function canManageUsers(){return ['developer','admin'].includes(currentProfile?.role);}
-function canCreateRole(r){
-  if(currentProfile?.role==='developer') return true;
-  if(currentProfile?.role==='admin') return ['operator','picker','admin'].includes(r);
-  return false;
-}
+function canImportNests(){return['developer','admin','operator'].includes(currentProfile?.role);}
+function canRaportare(){return['developer','admin','operator'].includes(currentProfile?.role);}
+function canManageUsers(){return['developer','admin'].includes(currentProfile?.role);}
+function canCreateRole(r){if(currentProfile?.role==='developer') return true;if(currentProfile?.role==='admin') return['operator','picker','admin'].includes(r);return false;}
 
-// ── Auth UI ──
-function authShowRegister(){
-  document.getElementById('auth-login-form').style.display='none';
-  document.getElementById('auth-reg-form').style.display='block';
-  document.getElementById('auth-sub').textContent='Creare cont nou';
-}
-function authShowLogin(){
-  document.getElementById('auth-login-form').style.display='block';
-  document.getElementById('auth-reg-form').style.display='none';
-  document.getElementById('auth-sub').textContent='Debitare Laser — Autentificare';
-}
+function showAuthErr(msg){const el=document.getElementById('auth-err');el.innerHTML=msg.replace(/\n/g,'<br>');el.classList.add('show');el.scrollIntoView({behavior:'smooth',block:'nearest'});}
+function hideAuthErr(){document.getElementById('auth-err').classList.remove('show');}
+function authShowRegister(){document.getElementById('auth-login-form').style.display='none';document.getElementById('auth-reg-form').style.display='block';document.getElementById('auth-sub').textContent='Creare cont nou';}
+function authShowLogin(){document.getElementById('auth-login-form').style.display='block';document.getElementById('auth-reg-form').style.display='none';document.getElementById('auth-sub').textContent='Debitare Laser — Autentificare';}
+function authSetLoading(btn,loading){const el=document.getElementById(btn);if(!el) return;el.disabled=loading;el.textContent=loading?'Se procesează...':(btn==='btn-login'?'Intră în aplicație':'Înregistrare');}
 
 function showToast(msg,type='ok',ms=3000){
   let t=document.getElementById('app-toast');
-  if(!t){t=document.createElement('div');t.id='app-toast';document.body.appendChild(t);}
-  t.className='toast '+type;t.innerHTML=(type==='ok'?'✓ ':'⚠ ')+msg;t.style.opacity='1';
+  if(!t){t=document.createElement('div');t.id='app-toast';t.style.cssText='position:fixed;bottom:24px;right:20px;background:var(--surf);border:1px solid var(--border);border-radius:8px;padding:10px 16px;font-size:.8rem;box-shadow:var(--sh);z-index:500;transition:opacity .3s;display:flex;align-items:center;gap:8px;';document.body.appendChild(t);}
+  t.style.color=type==='ok'?'var(--ok)':'var(--warn)';t.style.borderColor=type==='ok'?'rgba(38,198,106,.4)':'rgba(239,83,80,.4)';
+  t.innerHTML=(type==='ok'?'✓ ':'⚠ ')+msg;t.style.opacity='1';
   clearTimeout(t._tid);t._tid=setTimeout(()=>t.style.opacity='0',ms);
 }
-function showAuthErr(msg){const el=document.getElementById('auth-err');el.innerHTML=msg.replace(/\n/g,'<br>');el.classList.add('show');el.scrollIntoView({behavior:'smooth',block:'nearest'});}
-function hideAuthErr(){document.getElementById('auth-err').classList.remove('show');}
 
-function authSetLoading(btn,loading){
-  const el=document.getElementById(btn);
-  if(!el) return;
-  el.disabled=loading;
-  el.textContent=loading?'Se procesează...':(btn==='btn-login'?'Intră în aplicație':'Înregistrare');
-}
-
+/* ── LOGIN / REGISTER ── */
 async function authLogin(){
   hideAuthErr();
-  if(!sb){
-    showAuthErr('⚙ Supabase nu este configurat — folosește linkul "Schimbă server Supabase" de mai jos.');
-    return;
-  }
+  if(!sb){showAuthErr('⚙ Supabase nu e configurat — folosește "Schimbă server Supabase" de mai jos.');return;}
   const email=document.getElementById('auth-email').value.trim();
   const pass=document.getElementById('auth-pass').value;
   if(!email){showAuthErr('Introdu adresa de email.');return;}
   if(!pass){showAuthErr('Introdu parola.');return;}
-
   authSetLoading('btn-login',true);
-  console.log('[NestViewer] Login attempt:', email);
-
+  console.log('[NV] Login attempt:',email);
+  // Unlock after 8s regardless
+  setTimeout(()=>{if(document.getElementById('btn-login')?.disabled){authSetLoading('btn-login',false);if(!currentUser) showAuthErr('Timeout — verifică consola (F12) pentru erori.');}},8000);
   try{
     const{data,error}=await sb.auth.signInWithPassword({email,password:pass});
-    console.log('[NestViewer] Login result:', {user:data?.user?.email, error:error?.message});
-
+    console.log('[NV] Login result:',{user:data?.user?.email,error:error?.message});
     if(error){
       authSetLoading('btn-login',false);
-      if(error.message.includes('Invalid login credentials')||error.message.includes('invalid')){
-        showAuthErr('❌ Contul nu există sau parola este greșită.\n\nDacă nu te-ai înregistrat încă, apasă "Prima configurare" de mai jos.');
-      } else if(error.message.includes('Email not confirmed')){
-        showAuthErr('📧 Email-ul nu a fost confirmat.\n\nMergi în Supabase Dashboard → Authentication → Settings → Email → dezactivează "Enable email confirmations".');
-      } else if(error.message.includes('fetch')||error.message.includes('network')){
-        showAuthErr('🌐 Nu s-a putut conecta la Supabase. Verifică URL-ul proiectului în configurare.');
-      } else {
-        showAuthErr('Eroare Supabase: '+error.message);
-      }
-      return;
+      let msg='Eroare: '+error.message;
+      if(error.message.includes('Invalid login')||error.message.includes('invalid')) msg='❌ Contul nu există sau parola e greșită.\n\nDacă nu te-ai înregistrat, apasă "→ Înregistrare" de mai jos.';
+      else if(error.message.includes('Email not confirmed')) msg='📧 Email neconfirmat.\n\nMergi în Supabase → Authentication → Settings → dezactivează "Enable email confirmations".';
+      else if(error.message.includes('fetch')||error.message.includes('network')) msg='🌐 Nu s-a putut conecta. Verifică URL-ul din configurare.';
+      showAuthErr(msg);return;
     }
-
-    if(!data?.user){
-      authSetLoading('btn-login',false);
-      showAuthErr('❌ Login eșuat — nu s-a returnat niciun utilizator. Încearcă din nou.');
-      return;
-    }
-
-    console.log('[NestViewer] signInWithPassword OK — aștept onAuthStateChange...');
-    // Nu apelăm onLoginSuccess direct — lăsăm onAuthStateChange să facă asta
-    // după ce sesiunea e COMPLET stabilită (evită timing RLS issue)
-    // Timeout fallback: dacă onAuthStateChange nu vine în 5s, forțăm
-    // Unlock button after max 8 seconds regardless
-    setTimeout(()=>{
-      if(document.getElementById('btn-login')?.disabled){
-        authSetLoading('btn-login',false);
-        if(!currentUser) showAuthErr('Timeout — verifică consola (F12) pentru erori.');
-      }
-    }, 8000);
-    const _loginTimeout=setTimeout(async()=>{
-      if(!currentUser){
-        console.warn('[NestViewer] onAuthStateChange timeout — forțez onLoginSuccess');
-        await onLoginSuccess(data.user);
-      }
-    }, 5000);
-    window._loginTimeout=_loginTimeout;
-
+    if(!data?.user){authSetLoading('btn-login',false);showAuthErr('❌ Login eșuat — reîncearcă.');return;}
+    console.log('[NV] signInWithPassword OK — aștept onAuthStateChange...');
+    // onAuthStateChange will handle the rest; fallback after 5s
+    setTimeout(async()=>{if(!currentUser){console.warn('[NV] onAuthStateChange timeout — forțez');await onLoginSuccess(data.user);}},5000);
   }catch(e){
-    console.error('[NestViewer] Login exception:', e);
+    console.error('[NV] Login exception:',e);
     authSetLoading('btn-login',false);
-    showAuthErr('Eroare neașteptată: '+e.message+'\n\nVerifică consola (F12) pentru detalii.');
+    showAuthErr('Eroare neașteptată: '+e.message+'\n\nVerifică consola (F12).');
   }
 }
 
 async function authRegister(){
-  if(!sb){showAuthErr('Configurează Supabase în CONFIG.');return;}
+  if(!sb){showAuthErr('Configurează Supabase mai întâi.');return;}
   hideAuthErr();
   const name=document.getElementById('reg-name').value.trim();
   const email=document.getElementById('reg-email').value.trim();
@@ -1540,34 +1645,14 @@ async function authRegister(){
   const role=document.getElementById('reg-role').value;
   if(!name||!email||!pass){showAuthErr('Completează toate câmpurile.');return;}
   if(pass.length<6){showAuthErr('Parola trebuie să aibă minim 6 caractere.');return;}
-
   authSetLoading('btn-reg',true);
   try{
-    const{data,error}=await sb.auth.signUp({
-      email,password:pass,
-      options:{data:{display_name:name,role},emailRedirectTo:window.location.href}
-    });
-    if(error){
-      showAuthErr('Eroare înregistrare: '+error.message);
-      authSetLoading('btn-reg',false);
-      return;
-    }
-    if(!data.user){
-      showAuthErr('Înregistrare trimisă. Dacă primești email de confirmare, dă click pe link-ul din el, APOI dezactivează confirmările: Supabase → Authentication → Settings → "Enable email confirmations" = OFF');
-      authSetLoading('btn-reg',false);
-      return;
-    }
-    // Dacă user-ul e returnat direct (fără confirmare), continuă
-    if(data.session){
-      await onLoginSuccess(data.user);
-    } else {
-      showAuthErr('⚠ Confirmarea email este activată în Supabase. Mergi la: Supabase Dashboard → Authentication → Settings → Email → dezactivează "Enable email confirmations", apoi înregistrează-te din nou.');
-      authSetLoading('btn-reg',false);
-    }
-  }catch(e){
-    showAuthErr('Eroare: '+e.message);
-    authSetLoading('btn-reg',false);
-  }
+    const{data,error}=await sb.auth.signUp({email,password:pass,options:{data:{display_name:name,role},emailRedirectTo:window.location.href}});
+    if(error){showAuthErr('Eroare: '+error.message);authSetLoading('btn-reg',false);return;}
+    if(!data.user){showAuthErr('⚠ Confirmarea email e activată. Mergi în Supabase → Authentication → Settings → dezactivează "Enable email confirmations".');authSetLoading('btn-reg',false);return;}
+    if(data.session) await onLoginSuccess(data.user);
+    else{showAuthErr('⚠ Confirmarea email e activată. Dezactivează din Supabase Dashboard.');authSetLoading('btn-reg',false);}
+  }catch(e){showAuthErr('Eroare: '+e.message);authSetLoading('btn-reg',false);}
 }
 
 async function authLogout(){
@@ -1580,32 +1665,27 @@ async function authLogout(){
   Object.keys(pickingData).forEach(k=>delete pickingData[k]);
   Object.keys(opData).forEach(k=>delete opData[k]);
   Object.keys(scheduleData).forEach(k=>delete scheduleData[k]);
+  stockRecords=[];stockHeaders=[];
   renderNesturi();
 }
 
+/* ── onLoginSuccess ── */
 async function onLoginSuccess(user){
   currentUser=user;
-  if(!sb){setupOfflineMode();return;}
+  authSetLoading('btn-login',false);authSetLoading('btn-reg',false);
 
-  authSetLoading('btn-login',false);
-  authSetLoading('btn-reg',false);
-
-  // ── Verifică sesiunea e validă ──
-  const{data:{session:sess}}=await sb.auth.getSession();
-  console.log('[NestViewer] Session check:', sess?.user?.email||'no session');
-
-  // ── Citește profilul (3 încercări, cu pauze) ──
+  // Read profile with retries (timing fix)
   let profile=null;
   for(let attempt=0;attempt<3;attempt++){
     try{
       if(attempt>0) await new Promise(r=>setTimeout(r,500));
       const{data:pd,error:pe}=await sb.from('profiles').select('*').eq('id',user.id).maybeSingle();
-      console.log('[NestViewer] Profile attempt',attempt+1,'→',pd?.role||pe?.message||'no data');
+      console.log('[NV] Profile attempt',attempt+1,'→',pd?.role||pe?.message||'no data');
       if(pd){profile=pd;break;}
-    }catch(e){console.warn('[NestViewer] Profile read ex:',e.message);}
+    }catch(e){console.warn('[NV] Profile read:',e.message);}
   }
 
-  // ── Dacă tot nu există, creăm sau folosim fallback ──
+  // Create profile if missing
   if(!profile){
     try{
       const{data:ins,error:insErr}=await sb.from('profiles').insert({
@@ -1616,53 +1696,53 @@ async function onLoginSuccess(user){
       }).select().single();
       if(ins) profile=ins;
       else if(insErr?.code==='23505'){
-        // conflict — profilul există dar n-am putut citi (RLS) → retry forțat
         const{data:r2}=await sb.from('profiles').select('*').eq('id',user.id).maybeSingle();
         profile=r2;
       }
-    }catch(e){console.warn('[NestViewer] Profile insert:',e.message);}
+    }catch(e){console.warn('[NV] Profile insert:',e.message);}
   }
 
-  // ── Fallback final: construiește profil din metadata user ──
+  // Fallback
   if(!profile){
-    profile={
-      id:user.id,
-      role:user.user_metadata?.role||'developer',
-      display_name:user.user_metadata?.display_name||user.email?.split('@')[0]||'User',
-      email:user.email,active:true
-    };
-    console.warn('[NestViewer] Using fallback profile (RLS may block reads)');
+    profile={id:user.id,role:user.user_metadata?.role||'developer',
+      display_name:user.user_metadata?.display_name||user.email?.split('@')[0]||'User',email:user.email,active:true};
+    console.warn('[NV] Using fallback profile');
   }
 
   currentProfile=profile;
-  console.log('[NestViewer] Profile OK:', currentProfile.role, currentProfile.display_name);
-
+  console.log('[NV] Profile OK:',currentProfile.role,currentProfile.display_name);
   setupAppUI();
 
-  // Încarcă datele cu feedback vizual
   showToast('Se încarcă datele...','ok',10000);
   try{
+    await ensureStorageBucket();
     await loadAllData();
+    refreshStorageUsage(); // async, non-blocking
     showToast('✓ Bine ai revenit, '+currentProfile.display_name+'!');
     setupRealtime();
   }catch(e){
-    showToast('⚠ Date locale — '+e.message,'err',6000);
-    console.error('[NestViewer] loadAllData error:',e);
+    showToast('⚠ '+e.message,'err',6000);
+    console.error('[NV] loadAllData error:',e);
   }
 }
 
 function setupAppUI(){
   document.getElementById('auth-screen').style.display='none';
   document.getElementById('user-info-bar').style.display='flex';
-  // optional chaining — nu crăpăm dacă currentProfile e null
   const name=currentProfile?.display_name||currentProfile?.email||'User';
   const initials=name.split(' ').map(w=>w[0]||'').join('').slice(0,2).toUpperCase()||'?';
   document.getElementById('user-avatar').textContent=initials;
   document.getElementById('user-role-badge').innerHTML=roleBadge(currentProfile?.role||'operator');
   document.getElementById('t-stocuri').style.display='block';
   if(canManageUsers()) document.getElementById('t-utilizatori').style.display='block';
-  if(!canImportNests()) document.getElementById('dropzone-side').style.display='none';
-  document.getElementById('nestFilterBar').style.display=allPrograms.length?'flex':'none';
+  // Dropzone visible only on Nesturi + only for operator+
+  updateDropzoneVisibility();
+}
+
+function updateDropzoneVisibility(){
+  const dz=document.getElementById('dropzone-side');
+  if(!dz) return;
+  dz.style.display=(activeTab==='nesturi'&&canImportNests())?'flex':'none';
 }
 
 function setupOfflineMode(){
@@ -1672,57 +1752,74 @@ function setupOfflineMode(){
   document.getElementById('user-role-badge').innerHTML=roleBadge('developer');
   document.getElementById('t-stocuri').style.display='block';
   document.getElementById('t-utilizatori').style.display='block';
+  currentProfile={role:'developer',display_name:'Dev (Offline)'};
   stockLocations=[
     {code:'H1000',active:true},{code:'H2000',active:true},{code:'H3000',active:true},
     {code:'H4000',active:true},{code:'H5000',active:true},{code:'H6000',active:true},
     {code:'H7000',active:true},{code:'INCOMPL',active:true}
   ];
+  updateDropzoneVisibility();
 }
 
-// ── Load all data from Supabase ──
+/* ── Override switchTab to manage dropzone ── */
+const _origSwitchTab=switchTab;
+switchTab=function(tab){
+  _origSwitchTab(tab);
+  updateDropzoneVisibility();
+  if(tab==='stocuri') renderStocuri();
+  if(tab==='utilizatori') renderUtilizatori();
+};
+
+/* ── LOAD ALL DATA ── */
 async function loadAllData(){
   if(!sb) return;
-  try{
-    const{data:nests}=await sb.from('nests').select('*').order('priority',{ascending:true}).order('imported_at');
-    if(nests){
-      allPrograms.length=0;
-      nests.forEach(n=>{
-        const progs=(n.programs||[]).map(p=>({...p,source:n.source,_sbId:n.id}));
-        allPrograms.push(...progs);
-        ensureSchedule(n.source);
-        scheduleData[n.source]={schedNo:n.schedule_no||'',priority:n.priority||0};
-      });
-    }
-    const{data:pd}=await sb.from('picking_data').select('*');
-    if(pd) pd.forEach(d=>{pickingData[d.sheet_key]={sheetCode:d.sheet_code||'',reservedQty:String(d.reserved_qty||''),reservedAt:d.reserved_at,surplusMotiv:d.surplus_motiv||''};});
-    const{data:od}=await sb.from('operational_data').select('*');
-    if(od) od.forEach(d=>{opData[d.op_key]={coliDebitate:String(d.coli_debitate||''),motivDepasire:d.motiv_depasire||'',numOfSheetOverride:d.num_sheet_override||null,completedAt:d.completed_at||null};});
-    const{data:sl}=await sb.from('stock_locations').select('*').order('sort_order');
-    if(sl) stockLocations=sl;
+  // Nests
+  const{data:nests}=await sb.from('nests').select('*').order('priority',{ascending:true}).order('imported_at');
+  if(nests){
+    allPrograms.length=0;
+    nests.forEach(n=>{
+      const progs=(n.programs||[]).map(p=>({...p,source:n.source,_sbId:n.id,_importedAt:n.imported_at?new Date(n.imported_at).getTime():Date.now()}));
+      allPrograms.push(...progs);
+      ensureSchedule(n.source);
+      scheduleData[n.source]={schedNo:n.schedule_no||'',priority:n.priority||0};
+    });
+  }
+  // Picking
+  const{data:pd}=await sb.from('picking_data').select('*');
+  if(pd) pd.forEach(d=>{pickingData[d.sheet_key]={sheetCode:d.sheet_code||'',reservedQty:String(d.reserved_qty||''),reservedAt:d.reserved_at,surplusMotiv:d.surplus_motiv||''};});
+  // Operational
+  const{data:od}=await sb.from('operational_data').select('*');
+  if(od) od.forEach(d=>{opData[d.op_key]={coliDebitate:String(d.coli_debitate||''),motivDepasire:d.motiv_depasire||'',numOfSheetOverride:d.num_sheet_override||null,completedAt:d.completed_at||null};});
+  // Stock locations
+  const{data:sl}=await sb.from('stock_locations').select('*').order('sort_order');
+  if(sl&&sl.length) stockLocations=sl;
+  else if(!stockLocations.length) await initDefaultLocations();
+  // Stock records
+  const{data:sr}=await sb.from('stock_records').select('*').order('imported_at',{ascending:false}).limit(2000);
+  if(sr&&sr.length){stockRecords=sr.map(r=>({data:r.data}));if(stockRecords[0]?.data) stockHeaders=Object.keys(stockRecords[0].data);}
 
-    // Stock records – încarcă ultimul import din DB
-    const{data:sr}=await sb.from('stock_records').select('*').order('imported_at',{ascending:false}).limit(2000);
-    if(sr&&sr.length){
-      stockRecords=sr.map(r=>({data:r.data}));
-      if(stockRecords[0]?.data) stockHeaders=Object.keys(stockRecords[0].data);
-    }
-
-    refreshStats();updateTabCounts();
-    // Restaurează imaginile din cache local (stocate la import, înainte de strip pentru DB)
-    restoreImagesFromCache();
-    restoreImagesFromCache();
-    renderNesturi();
-    if(activeTab==='picking') renderPicking();
-    if(activeTab==='raportare') renderRaportare();
-    if(activeTab==='stocuri') renderStocuri();
-  }catch(e){console.warn('loadAllData:',e);}
+  restoreImagesFromCache();
+  refreshStats();updateTabCounts();
+  renderNesturi();
+  if(activeTab==='picking') renderPicking();
+  if(activeTab==='raportare') renderRaportare();
+  if(activeTab==='stocuri') renderStocuri();
 }
 
-// ── Realtime subscriptions ──
+async function initDefaultLocations(){
+  const defaults=['H1000','H2000','H3000','H4000','H5000','H6000','H7000','INCOMPL'];
+  if(sb&&currentUser){
+    const batch=defaults.map((code,i)=>({code,active:true,sort_order:i}));
+    await sb.from('stock_locations').upsert(batch,{onConflict:'code'});
+  }
+  stockLocations=defaults.map((code,i)=>({id:code,code,active:true,sort_order:i}));
+}
+
+/* ── REALTIME ── */
 function setupRealtime(){
   if(!sb) return;
   _realtimeSubs.forEach(s=>s?.unsubscribe?.());_realtimeSubs=[];
-  const ch=sb.channel('nestviewer')
+  const ch=sb.channel('nv-sync')
     .on('postgres_changes',{event:'*',schema:'public',table:'nests'},()=>loadAllData())
     .on('postgres_changes',{event:'*',schema:'public',table:'picking_data'},()=>{if(sb) loadAllData();})
     .on('postgres_changes',{event:'*',schema:'public',table:'operational_data'},()=>{if(sb) loadAllData();})
@@ -1735,160 +1832,152 @@ function setupRealtime(){
   _realtimeSubs.push({unsubscribe:()=>sb.removeChannel(ch)});
 }
 
-// ── Save to Supabase ──
+/* ── SAVE TO SUPABASE ── */
 async function saveNestToSupabase(source,programs){
   if(!sb||!currentUser) return;
-  // Salvează imaginile în cache LOCAL înainte de a le șterge pentru DB
-  saveImagesToCache(source, programs);
-  const progsCleaned=programs.map(p=>({...p,parts:(p.parts||[]).map(x=>({...x,imageDataUrl:null})),thumbnail:null}));
+  saveImagesToCache(source,programs);
+  const canStore=storageUsedBytes<STORAGE_LIMIT;
+  const progsCleaned=await Promise.all(programs.map(async p=>{
+    const partsCleaned=await Promise.all((p.parts||[]).map(async x=>{
+      let imageUrl=x.imageUrl||null;
+      if(!imageUrl&&x.imageDataUrl&&canStore) imageUrl=await uploadImageToStorage(source,x.alias,x.imageDataUrl);
+      return{...x,imageDataUrl:null,imageUrl};
+    }));
+    let thumbnailUrl=p.thumbnailUrl||null;
+    if(!thumbnailUrl&&p.thumbnail&&canStore) thumbnailUrl=await uploadImageToStorage(source,'__thumb__',p.thumbnail);
+    return{...p,parts:partsCleaned,thumbnail:null,thumbnailUrl};
+  }));
   const first=programs[0];
   const payload={source,machine:first?.machine||'',job_name:first?.nestName||source,
     schedule_no:getSchedNo(source),priority:getPriority(source),
     programs:progsCleaned,imported_by:currentUser.id};
   const{error}=await sb.from('nests').upsert(payload,{onConflict:'source'});
-  if(error) console.warn('saveNest error:',error.message,'– payload source:',source);
+  if(error) console.warn('saveNest error:',error.message);
 }
-
 
 async function savePickingToSupabase(key){
   if(!sb||!currentUser) return;
   const d=pickingData[key];if(!d) return;
-  const{error:pe}=await sb.from('picking_data').upsert({
+  await sb.from('picking_data').upsert({
     sheet_key:key,sheet_code:d.sheetCode||'',reserved_qty:parseInt(d.reservedQty)||0,
     reserved_at:d.reservedAt||null,surplus_motiv:d.surplusMotiv||'',
     reserved_by:currentUser.id,updated_at:new Date().toISOString()
   },{onConflict:'sheet_key'});
-  if(pe) console.warn('savePicking error:',pe.message);
 }
 
+async function saveOpToSupabase(key){
+  if(!sb||!currentUser) return;
+  const d=opData[key];if(!d) return;
+  await sb.from('operational_data').upsert({
+    op_key:key,coli_debitate:parseInt(d.coliDebitate)||0,motiv_depasire:d.motivDepasire||'',
+    num_sheet_override:d.numOfSheetOverride||null,completed_at:d.completedAt||null,
+    updated_by:currentUser.id,updated_at:new Date().toISOString()
+  },{onConflict:'op_key'});
+}
 
 async function deleteNestFromSupabase(source){
   if(!sb) return;
   await sb.from('nests').delete().eq('source',source);
 }
 
-// ── Intercept save ──
+/* ── INTERCEPTORI – salvare automată la fiecare modificare ── */
 const _origPkCode=pkCode;
 pkCode=function(el){_origPkCode(el);savePickingToSupabase(el.dataset.key);};
 
-// ── User Management ──
-async function renderUtilizatori(){
-  const el=document.getElementById('utilizatori-main');
-  if(!canManageUsers()){el.innerHTML='<div class="empty-state"><div class="ei">🔒</div><div class="et">Acces restricționat.</div></div>';return;}
-  if(!sb){el.innerHTML='<div class="empty-state"><div class="ei">⚙️</div><div class="et">Configurează Supabase în CONFIG.</div></div>';return;}
-  // sbAdmin bypasses RLS — citește toate profilele indiferent de politici
-  const adminClient=sbAdmin||sb;
-  const{data:users}=await adminClient.from('profiles').select('*').order('created_at');
-  const rows=(users||[]).map(u=>{
-    const canEdit=currentProfile.role==='developer'||(currentProfile.role==='admin'&&u.role!=='developer');
-    const canDel=currentProfile.role==='developer'&&u.id!==currentUser.id&&u.role!=='developer';
-    return `<tr>
-      <td><strong>${esc(u.display_name||'')}</strong></td>
-      <td style="font-size:.74rem;color:var(--muted)">${esc(u.email||'')}</td>
-      <td>${roleBadge(u.role)}</td>
-      <td style="font-size:.72rem">${u.active!==false?'<span style="color:var(--ok)">✓ Activ</span>':'<span style="color:var(--dim)">⊘ Inactiv</span>'}</td>
-      <td style="display:flex;gap:6px">
-        ${canEdit?`<button class="btn-sm btn-cancel-def" onclick="editUserRole('${u.id}','${u.role}')">Rol</button>`:''}
-        ${canDel?`<button class="btn-sm" style="border-color:rgba(239,83,80,.4);color:var(--warn)" onclick="deactivateUser('${u.id}')">Dezactivează</button>`:''}
-      </td>
-    </tr>`;
-  }).join('');
-  el.innerHTML=`
-    <div class="s-head">👥 Utilizatori (${(users||[]).length})</div>
-    <div class="sc"><table class="users-table">
-      <thead><tr><th>Nume</th><th>Email</th><th>Rol</th><th>Status</th><th>Acțiuni</th></tr></thead>
-      <tbody>${rows||'<tr><td colspan="5" style="padding:12px;text-align:center;color:var(--dim)">—</td></tr>'}</tbody>
-    </table></div>
-    <div class="s-head" style="margin-top:20px">➕ Utilizator nou</div>
-    <div class="sc" style="padding:16px">
-      <div class="user-form-grid">
-        <input class="auth-inp" id="nu-name" placeholder="Nume afișat" style="margin:0">
-        <input type="email" class="auth-inp" id="nu-email" placeholder="Email" style="margin:0">
-        <input type="password" class="auth-inp" id="nu-pass" placeholder="Parolă (min 6 car.)" style="margin:0">
-        <select class="auth-inp" id="nu-role" style="margin:0;cursor:pointer">
-          <option value="picker">Picker</option>
-          <option value="operator">Operator</option>
-          ${currentProfile.role==='developer'?'<option value="admin">Admin</option>':''}
-          ${currentProfile.role==='developer'?'<option value="developer">Developer</option>':''}
-        </select>
-      </div>
-      <button class="auth-btn" style="max-width:200px;margin-top:4px" onclick="createUser()">Creează utilizator</button>
-      <div class="auth-err" id="user-err" style="margin-top:10px;display:none"></div>
-    </div>`;
-}
+const _origPkRes=pkRes;
+pkRes=function(el){_origPkRes(el);savePickingToSupabase(el.dataset.key);};
 
-async function createUser(){
-  const name=document.getElementById('nu-name').value.trim();
-  const email=document.getElementById('nu-email').value.trim();
-  const pass=document.getElementById('nu-pass').value;
-  const role=document.getElementById('nu-role').value;
-  const errEl=document.getElementById('user-err');
-  if(!name||!email||!pass){errEl.textContent='Completează toate câmpurile.';errEl.style.display='block';return;}
-  if(!canCreateRole(role)){errEl.textContent='Nu ai dreptul să creezi utilizatori cu acest rol.';errEl.style.display='block';return;}
-  try{
-    const{data,error}=await sbAdmin.auth.admin.createUser({
-      email,password:pass,email_confirm:true,user_metadata:{display_name:name,role}
+const _origSurplusConfirm=surplusConfirm;
+surplusConfirm=async function(){const key=surplusPending?.key;_origSurplusConfirm();if(key) await savePickingToSupabase(key);};
+
+const _origRapDebInput=rapDebInput;
+rapDebInput=function(el){_origRapDebInput(el);const ok=el.dataset.ok;if(ok) saveOpToSupabase(ok);};
+
+const _origOcConfirm=ocConfirm;
+ocConfirm=async function(){const ok=ocPending?.ok;_origOcConfirm();if(ok) await saveOpToSupabase(ok);};
+
+const _origRapNecInput=rapNecInput;
+rapNecInput=function(el){_origRapNecInput(el);const ok=el.dataset.ok;if(ok) saveOpToSupabase(ok);};
+
+const _origScheduleInput=scheduleInput;
+scheduleInput=async function(el,src){_origScheduleInput(el,src);if(sb&&currentUser&&src) await sb.from('nests').update({schedule_no:el.value}).eq('source',src);};
+
+const _origSetPriority=setPriority;
+setPriority=async function(src,val){_origSetPriority(src,val);if(sb&&currentUser&&src) await sb.from('nests').update({priority:parseInt(val)||0}).eq('source',src);};
+
+const _origSchedConfirm=schedConfirm;
+schedConfirm=async function(){const src=schedQueue[0];const val=document.getElementById('sched-inp-modal')?.value||'';_origSchedConfirm();if(sb&&currentUser&&src) await sb.from('nests').update({schedule_no:val}).eq('source',src);};
+
+const _origStatStop=statStop;
+statStop=async function(){
+  const ev=stat.active?{...stat.active}:null;
+  _origStatStop();
+  if(ev&&sb&&currentUser){
+    await sb.from('stationari_log').insert({
+      stat_type:ev.type,label:ev.label||'',icon:ev.icon||'',description:ev.desc||'',
+      start_time:new Date(ev.startTime).toISOString(),
+      end_time:new Date().toISOString(),
+      duration:Date.now()-ev.startTime,logged_by:currentUser.id
     });
-    if(error) throw error;
-    errEl.style.display='none';
-    document.getElementById('nu-name').value='';document.getElementById('nu-email').value='';document.getElementById('nu-pass').value='';
-    renderUtilizatori();
-  }catch(e){errEl.textContent='Eroare: '+(e.message||String(e));errEl.style.display='block';}
-}
+  }
+};
 
-async function editUserRole(uid,crtRole){
-  const newRole=prompt('Rol nou (developer/admin/operator/picker):',crtRole);
-  if(!newRole||newRole===crtRole) return;
-  if(!['developer','admin','operator','picker'].includes(newRole)){alert('Rol invalid.');return;}
-  if(!canCreateRole(newRole)){alert('Nu ai dreptul să asignezi acest rol.');return;}
-  await sb.from('profiles').update({role:newRole}).eq('id',uid);
-  renderUtilizatori();
-}
+const _origDoPost=doPostLoadRender;
+doPostLoadRender=async function(){
+  _origDoPost();
+  const sources=[...new Set(allPrograms.map(p=>p.source))];
+  let saveOk=true;
+  for(const src of sources){
+    try{await saveNestToSupabase(src,allPrograms.filter(p=>p.source===src));}
+    catch(e){saveOk=false;console.warn(e);}
+  }
+  refreshStorageUsage();
+  if(saveOk) showToast('✓ Nesturi salvate în Supabase');
+  else showToast('⚠ Eroare la salvare în Supabase','err');
+};
 
-async function deactivateUser(uid){
-  if(!confirm('Dezactivezi acest utilizator?')) return;
-  await sb.from('profiles').update({active:false}).eq('id',uid);
-  await sbAdmin.auth.admin.updateUserById(uid,{ban_duration:'87600h'});
-  renderUtilizatori();
-}
+const _origDeleteNest=deleteNest;
+deleteNest=function(src){
+  const confirmed=confirm('Șterge nestul "'+src+'" din listă?');
+  if(!confirmed) return;
+  for(let i=allPrograms.length-1;i>=0;i--){if(allPrograms[i].source===src) allPrograms.splice(i,1);}
+  delete scheduleData[src];
+  [...expandedRows].forEach(k=>{if(k.startsWith(src+'|||')) expandedRows.delete(k);});
+  refreshStats();updateTabCounts();
+  renderNesturi();if(activeTab==='picking') renderPicking();if(activeTab==='raportare') renderRaportare();
+  deleteNestFromSupabase(src);
+  deleteImageCache(src);
+  deleteSourceImages(src);
+};
 
-// ── Stock Locations ──
+/* ── STOCK LOCATIONS ── */
 async function loadStockLocations(){
   if(!sb) return;
   const{data}=await sb.from('stock_locations').select('*').order('sort_order');
   if(data) stockLocations=data;
   if(activeTab==='stocuri') renderStocuri();
 }
-
 async function addStockLocation(){
   const inp=document.getElementById('new-loc-inp');
-  const code=inp.value.trim().toUpperCase();
-  if(!code) return;
+  const code=inp.value.trim().toUpperCase();if(!code) return;
   if(!sb){stockLocations.push({code,active:true});renderStocuri();inp.value='';return;}
   await sb.from('stock_locations').insert({code,active:true,sort_order:stockLocations.length});
   inp.value='';
 }
-
 async function removeStockLocation(code){
   if(!sb){stockLocations=stockLocations.filter(l=>l.code!==code);renderStocuri();return;}
   await sb.from('stock_locations').delete().eq('code',code);
 }
 
-// ── Stock Import ──
+/* ── STOCK IMPORT ── */
 async function importStockFile(file){
   if(!file) return;
   const ext=file.name.split('.').pop().toLowerCase();
   let rows=[],headers=[];
   if(['xlsx','xls','xlsm'].includes(ext)){
-    // Dacă SheetJS nu a fost încărcat, îl încarcă dinamic
     if(typeof XLSX==='undefined'){
-      try{
-        await new Promise((res,rej)=>{
-          const s=document.createElement('script');
-          s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
-          s.onload=res;s.onerror=rej;document.head.appendChild(s);
-        });
-      }catch(e){alert('Nu s-a putut încărca biblioteca Excel. Verifică conexiunea la internet.');return;}
+      try{await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s);});}
+      catch(e){alert('Nu s-a putut încărca biblioteca Excel.');return;}
     }
     const ab=await file.arrayBuffer();
     const wb=XLSX.read(ab,{type:'array'});
@@ -1918,8 +2007,7 @@ async function importStockFile(file){
   if(locIdx<0){alert('Coloana LOCATION nu a fost găsită! Coloane: '+headers.join(', '));return;}
   const activeCodes=new Set(stockLocations.filter(l=>l.active).map(l=>l.code.toUpperCase()));
   const filtered=rows.filter(r=>activeCodes.has(String(r['LOCATION']||'').trim().toUpperCase()));
-  stockRecords=filtered.map(r=>({data:r}));
-  stockHeaders=headers;
+  stockRecords=filtered.map(r=>({data:r}));stockHeaders=headers;
   if(sb&&currentUser&&filtered.length){
     await sb.from('stock_records').delete().not('id','is',null).catch(()=>{});
     const batchId=crypto.randomUUID();
@@ -1932,27 +2020,26 @@ async function importStockFile(file){
   showToast(filtered.length+' înregistrări importate din '+file.name);
 }
 
-// ── Render Stocuri ──
+/* ── RENDER STOCURI ── */
 function renderStocuri(){
   const el=document.getElementById('stocuri-main');
+  if(!el) return;
   const locTags=stockLocations.map(l=>`
     <span class="stock-loc-tag">
       <span class="dtb dt-l" style="font-size:.66rem;padding:1px 6px">${esc(l.code)}</span>
       ${canImportNests()?`<button onclick="removeStockLocation('${esc(l.code)}')" title="Șterge">×</button>`:''}
     </span>`).join('');
-  const PRIO_COLS=['ITEM NR','ITEM NAME','ITEM DESCRIPTION','LOCATION','LOTNR','STANDARD QTY','STANDARD U/M','AVG'];
-  const displayHeaders=stockHeaders.length?stockHeaders:PRIO_COLS;
+  const displayHeaders=stockHeaders.length?stockHeaders:['ITEM NR','ITEM NAME','ITEM DESCRIPTION','LOCATION','LOTNR','STANDARD QTY','STANDARD U/M','AVG'];
   const byLoc={};
   stockRecords.forEach(r=>{const loc=String(r.data['LOCATION']||'').trim();if(!byLoc[loc]) byLoc[loc]=[];byLoc[loc].push(r.data);});
   const locSummary=Object.entries(byLoc).sort((a,b)=>a[0].localeCompare(b[0])).map(([loc,items])=>
-    `<span class="stock-loc-tag"><span class="dtb dt-l" style="font-size:.66rem">${esc(loc)}</span><span style="font-size:.66rem;color:var(--accent);font-weight:700;margin-left:4px">${items.length} pcs</span></span>`).join('');
+    `<span class="stock-loc-tag"><span class="dtb dt-l" style="font-size:.66rem">${esc(loc)}</span><span style="font-size:.66rem;color:var(--accent);font-weight:700;margin-left:4px">${items.length}</span></span>`).join('');
   const thSt='background:var(--surf2);padding:6px 9px;font-size:.6rem;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;position:sticky;top:0;';
   const tableHeaders=displayHeaders.map(h=>`<th style="${thSt}">${esc(h)}</th>`).join('');
   const recRows=stockRecords.slice(0,1000).map(r=>{
     const row=r.data||{};
     return `<tr>${displayHeaders.map(h=>{
-      let v=String(row[h]??'').trim();
-      let s='padding:5px 9px;font-size:.75rem;border-bottom:1px solid rgba(42,47,74,.3);';
+      let v=String(row[h]??'').trim();let s='padding:5px 9px;font-size:.75rem;border-bottom:1px solid rgba(42,47,74,.3);';
       if(h==='LOCATION') s+='font-weight:700;color:var(--accent);font-family:var(--mono);';
       if(h==='ITEM NR') s+='font-family:var(--mono);font-size:.72rem;';
       if(h==='STANDARD QTY') s+='text-align:right;font-weight:600;color:var(--ok);';
@@ -1963,15 +2050,9 @@ function renderStocuri(){
   el.innerHTML=`
     <div class="s-head">📍 Locații filtrate</div>
     <div class="stock-loc-list">${locTags}</div>
-    ${canImportNests()?`<div class="stock-add-row">
-      <input class="pk-input code" id="new-loc-inp" placeholder="Cod nou (ex: H8000)" style="width:140px" onkeydown="if(event.key==='Enter') addStockLocation()">
-      <button class="btn-sm btn-start-def" onclick="addStockLocation()">+ Adaugă</button>
-    </div>`:''}
+    ${canImportNests()?`<div class="stock-add-row"><input class="pk-input code" id="new-loc-inp" placeholder="Cod nou (ex: H8000)" style="width:140px" onkeydown="if(event.key==='Enter') addStockLocation()"><button class="btn-sm btn-start-def" onclick="addStockLocation()">+ Adaugă</button></div>`:''}
     <div class="s-head" style="margin-top:4px">📂 Import stoc (CSV / Excel .xlsx)</div>
-    ${canImportNests()?`<div style="margin-bottom:12px">
-      <input type="file" id="stock-file-inp" accept=".csv,.xlsx,.xls" style="display:none" onchange="importStockFile(this.files[0])">
-      <button class="auth-btn" style="max-width:220px" onclick="document.getElementById('stock-file-inp').click()">📂 Selectează fișier</button>
-    </div>`:''}
+    ${canImportNests()?`<div style="margin-bottom:12px"><input type="file" id="stock-file-inp" accept=".csv,.xlsx,.xls" style="display:none" onchange="importStockFile(this.files[0])"><button class="auth-btn" style="max-width:220px" onclick="document.getElementById('stock-file-inp').click()">📂 Selectează fișier</button></div>`:''}
     ${stockRecords.length?`
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
         <span style="font-size:.78rem;font-weight:600">${stockRecords.length} înregistrări filtrate</span>${locSummary}
@@ -1980,366 +2061,89 @@ function renderStocuri(){
         <table style="border-collapse:collapse;width:100%;min-width:700px"><thead><tr>${tableHeaders}</tr></thead><tbody>${recRows}</tbody></table>
       </div>
       ${stockRecords.length>1000?`<div style="padding:8px;font-size:.72rem;color:var(--muted);text-align:center">Primele 1000 din ${stockRecords.length}.</div>`:''}
-    `:'<div class="empty-state" style="padding:24px"><div class="et">Importă un fișier Excel (.xlsx) sau CSV filtrat pe locații.</div></div>'}`;
+    `:'<div class="empty-state" style="padding:24px"><div class="et">Importă un fișier Excel (.xlsx) sau CSV filtrat pe locații.<br>Poți trage fișierul direct pe pagină!</div></div>'}`;
 }
 
-// ══════════════════════════════════════════════════
-// INTERCEPTORI SUPABASE – salvează TOATE modificările
-// ══════════════════════════════════════════════════
-
-// ── saveOpToSupabase ──
-async function saveOpToSupabase(key){
-  if(!sb||!currentUser||!key) return;
-  const d=opData[key];if(!d) return;
-  await sb.from('operational_data').upsert({
-    op_key:key,
-    coli_debitate:parseInt(d.coliDebitate)||0,
-    motiv_depasire:d.motivDepasire||'',
-    num_sheet_override:d.numOfSheetOverride||null,
-    completed_at:d.completedAt||null,
-    updated_by:currentUser.id,
-    updated_at:new Date().toISOString()
-  },{onConflict:'op_key'});
+/* ── USER MANAGEMENT ── */
+async function renderUtilizatori(){
+  const el=document.getElementById('utilizatori-main');
+  if(!canManageUsers()){el.innerHTML='<div class="empty-state"><div class="ei">🔒</div><div class="et">Acces restricționat.</div></div>';return;}
+  if(!sb){el.innerHTML='<div class="empty-state"><div class="ei">⚙️</div><div class="et">Configurează Supabase.</div></div>';return;}
+  const adminClient=sbAdmin||sb;
+  const{data:users}=await adminClient.from('profiles').select('*').order('created_at');
+  const rows=(users||[]).map(u=>{
+    const canEdit=currentProfile.role==='developer'||(currentProfile.role==='admin'&&u.role!=='developer');
+    const canDel=currentProfile.role==='developer'&&u.id!==currentUser.id&&u.role!=='developer';
+    return `<tr>
+      <td><strong>${esc(u.display_name||'')}</strong></td>
+      <td style="font-size:.74rem;color:var(--muted)">${esc(u.email||'')}</td>
+      <td>${roleBadge(u.role)}</td>
+      <td style="font-size:.72rem">${u.active!==false?'<span style="color:var(--ok)">✓ Activ</span>':'<span style="color:var(--dim)">⊘ Inactiv</span>'}</td>
+      <td style="display:flex;gap:6px">
+        ${canEdit?`<button class="btn-sm btn-cancel-def" onclick="editUserRole('${u.id}','${u.role}')">Rol</button>`:''}
+        ${canDel?`<button class="btn-sm" style="border-color:rgba(239,83,80,.4);color:var(--warn)" onclick="deactivateUser('${u.id}')">Dezactivează</button>`:''}
+      </td>
+    </tr>`;}).join('');
+  el.innerHTML=`
+    <div class="s-head">👥 Utilizatori (${(users||[]).length})</div>
+    <div class="sc"><table class="users-table">
+      <thead><tr><th>Nume</th><th>Email</th><th>Rol</th><th>Status</th><th>Acțiuni</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="5" style="padding:12px;text-align:center;color:var(--dim)">—</td></tr>'}</tbody>
+    </table></div>
+    <div class="s-head" style="margin-top:20px">➕ Utilizator nou</div>
+    <div class="sc" style="padding:16px">
+      <div class="user-form-grid">
+        <input class="auth-inp" id="nu-name" placeholder="Nume afișat" style="margin:0">
+        <input type="email" class="auth-inp" id="nu-email" placeholder="Email" style="margin:0">
+        <input type="password" class="auth-inp" id="nu-pass" placeholder="Parolă (min 6 car.)" style="margin:0">
+        <select class="auth-inp" id="nu-role" style="margin:0;cursor:pointer">
+          <option value="picker">Picker</option><option value="operator">Operator</option>
+          ${currentProfile.role==='developer'?'<option value="admin">Admin</option>':''}
+          ${currentProfile.role==='developer'?'<option value="developer">Developer</option>':''}
+        </select>
+      </div>
+      <button class="auth-btn" style="max-width:200px;margin-top:4px" onclick="createUser()">Creează utilizator</button>
+      <div class="auth-err" id="user-err" style="margin-top:10px;display:none"></div>
+    </div>`;
 }
 
-// ── 1. pkRes — salveaza cantitatea rezervată ──
-const _origPkRes=pkRes;
-pkRes=function(el){
-  _origPkRes(el);
-  savePickingToSupabase(el.dataset.key);
-};
-
-// ── 2. surplusConfirm — salveaza motivul suprarezervare ──
-const _origSurplusConfirm=surplusConfirm;
-surplusConfirm=async function(){
-  const key=surplusPending?.key; // capturează înainte ca originalul să șteargă
-  _origSurplusConfirm();
-  if(key) await savePickingToSupabase(key);
-};
-
-// ── 3. rapDebInput — salveaza coli debitate ──
-const _origRapDebInput=rapDebInput;
-rapDebInput=function(el){
-  _origRapDebInput(el);
-  const ok=el.dataset.ok;
-  if(ok) saveOpToSupabase(ok);
-};
-
-// ── 4. ocConfirm — salveaza motiv depășire + coli debitate ──
-const _origOcConfirm=ocConfirm;
-ocConfirm=async function(){
-  const ok=ocPending?.ok;
-  _origOcConfirm();
-  if(ok) await saveOpToSupabase(ok);
-};
-
-// ── 5. rapNecInput — salveaza override numOfSheet ──
-const _origRapNecInput=rapNecInput;
-rapNecInput=function(el){
-  _origRapNecInput(el);
-  const ok=el.dataset.ok;
-  if(ok) saveOpToSupabase(ok);
-};
-
-// ── 6. scheduleInput — salveaza schedule_no în nests ──
-const _origScheduleInput=scheduleInput;
-scheduleInput=async function(el,src){
-  _origScheduleInput(el,src);
-  if(sb&&currentUser&&src){
-    await sb.from('nests').update({schedule_no:el.value}).eq('source',src);
-  }
-};
-
-// ── 7. setPriority — salveaza priority în nests ──
-const _origSetPriority=setPriority;
-setPriority=async function(src,val){
-  _origSetPriority(src,val);
-  if(sb&&currentUser&&src){
-    await sb.from('nests').update({priority:parseInt(val)||0}).eq('source',src);
-  }
-};
-
-// ── 8. schedConfirm — salveaza schedule_no după prompt ──
-const _origSchedConfirm=schedConfirm;
-schedConfirm=async function(){
-  const src=schedQueue[0];
-  const val=document.getElementById('sched-inp-modal')?.value||'';
-  _origSchedConfirm();
-  if(sb&&currentUser&&src){
-    await sb.from('nests').update({schedule_no:val}).eq('source',src);
-  }
-};
-
-// ── 9. addStockLocation / removeStockLocation — deja în funcțiile Supabase ──
-
-
-/* ══ STATIONARI FUNCTIONS (restaurate) ══ */
-function startStatTimer(){
-  if(stat.timerRef) clearInterval(stat.timerRef);
-  stat.timerRef=setInterval(()=>{
-    if(stat.active){const el=document.getElementById('stat-timer');if(el) el.textContent=formatDur(activeMs());}
-    else{const el=document.getElementById('run-timer');if(el) el.textContent=formatDur(runningMs());}
-  },1000);
-}
-function runningMs(){if(stat.active) return stat.runAccum;return stat.runAccum+(stat.runStart?Date.now()-stat.runStart:0);}
-function activeMs(){return stat.active?Date.now()-stat.active.startTime:0;}
-function statStartEvt(type){
-  if(stat.active) return;
-  const t=STAT_TYPES.find(x=>x.id===type);if(!t) return;
-  if(t.requiresDesc){
-    pendingStatType=type;
-    const panel=document.getElementById('def-desc-panel');
-    if(panel){
-      const lbl=panel.querySelector('label');const inp=panel.querySelector('.def-desc-input');
-      if(lbl) lbl.textContent=t.descLabel||'Motiv:';
-      if(inp) inp.placeholder=t.descPlaceholder||'Introduceți motivul…';
-      panel.style.display='block';inp?.focus();
-    }
-    return;
-  }
-  stat.runAccum+=Date.now()-(stat.runStart||Date.now());stat.runStart=null;
-  stat.active={type,label:t.label,icon:t.icon,startTime:Date.now(),desc:''};
-  renderStatPanel();
-}
-function statStartDef(){
-  const type=pendingStatType||'DEF';
-  const desc=document.getElementById('def-desc')?.value.trim()||'';
-  const panel=document.getElementById('def-desc-panel');
-  if(panel){panel.style.display='none';}
-  const inp=document.getElementById('def-desc');if(inp) inp.value='';
-  pendingStatType=null;
-  stat.runAccum+=Date.now()-(stat.runStart||Date.now());stat.runStart=null;
-  const t=STAT_TYPES.find(x=>x.id===type)||STAT_TYPES.find(x=>x.id==='DEF');
-  stat.active={type,label:t.label,icon:t.icon,startTime:Date.now(),desc};
-  renderStatPanel();
-}
-function statCancelDef(){
-  const panel=document.getElementById('def-desc-panel');if(panel) panel.style.display='none';
-  const inp=document.getElementById('def-desc');if(inp) inp.value='';
-}
-function statStop(){
-  if(!stat.active) return;
-  const endTime=Date.now();const duration=endTime-stat.active.startTime;
-  stat.log.push({...stat.active,endTime,duration});
-  stat.active=null;stat.runStart=Date.now();
-  renderStatPanel();renderStatTable();
-}
-function toggleStatPanel(){
-  stat.panelOpen=!stat.panelOpen;
-  const body=document.getElementById('stat-panel-body');
-  if(body) body.style.display=stat.panelOpen?'block':'none';
-  const ch=document.querySelector('.stat-chevron');if(ch) ch.textContent=stat.panelOpen?'▾':'▸';
-}
-function renderStatPanel(){
-  const el=document.getElementById('stat-panel');if(!el) return;
-  const isActive=!!stat.active;
-  const btns=STAT_TYPES.map(t=>`<button class="stat-btn ${t.btnCls}" onclick="statStartEvt('${t.id}')" ${isActive?'disabled':''}>${t.icon} ${t.label}</button>`).join('');
-  const statusHtml=isActive
-    ?`<div class="stat-status stopped"><div class="stat-dot red"></div><div><div class="stat-status-text">${stat.active.icon} ${stat.active.label}${stat.active.desc?`: <em>${esc(stat.active.desc)}</em>`:''}</div><div style="font-size:.71rem;color:var(--muted)">Funcționare acumulată: ${formatDur(stat.runAccum)}</div></div><div class="stat-timer-big" id="stat-timer">${formatDur(activeMs())}</div><button class="stat-btn stop-btn" onclick="statStop()">⏹ STOP</button></div>`
-    :`<div class="stat-status running"><div class="stat-dot green"></div><div class="stat-status-text">ÎN FUNCȚIUNE</div><div class="stat-timer-big" id="run-timer">${formatDur(runningMs())}</div></div>`;
-  el.innerHTML=`<div class="stat-panel-head" onclick="toggleStatPanel()"><span style="font-size:.95rem">📡</span><span class="stat-panel-title">Monitorizare Linie</span><span class="stat-chevron" style="margin-left:auto;color:var(--dim)">${stat.panelOpen?'▾':'▸'}</span></div>
-  <div id="stat-panel-body" style="display:${stat.panelOpen?'block':'none'}"><div class="stat-panel-body">
-    ${statusHtml}
-    <div class="def-desc-panel" id="def-desc-panel">
-      <label>🔧 Descriere defect:</label>
-      <textarea class="def-desc-input" id="def-desc" placeholder="ex: Blocaj mese, Alarmă temperatură…"></textarea>
-      <div class="def-desc-btns"><button class="btn-sm btn-start-def" onclick="statStartDef()">▶ Start cronometru</button><button class="btn-sm btn-cancel-def" onclick="statCancelDef()">Anulează</button></div>
-    </div>
-    ${!isActive?`<div class="stat-btns">${btns}</div>`:''}
-    <div id="stat-log-area"></div>
-  </div></div>`;
-  renderStatTable();
-  startStatTimer();
-}
-function renderStatTable(){
-  const el=document.getElementById('stat-log-area');if(!el) return;
-  if(!stat.log.length){el.innerHTML='<div class="stat-log-empty">Niciun eveniment înregistrat.</div>';return;}
-  const rows=stat.log.map(e=>`<tr><td><span class="mbadge" style="font-size:.6rem;${getStatColor(e.type)}">${e.icon} ${e.label}</span></td><td style="font-size:.75rem;color:var(--muted)">${e.desc||'—'}</td><td style="font-family:var(--mono);font-size:.73rem">${formatTime(e.startTime)}</td><td style="font-family:var(--mono);font-size:.73rem">${formatTime(e.endTime)}</td><td style="font-family:var(--mono);font-weight:700;font-size:.8rem;color:var(--accent)">${formatDur(e.duration)}</td></tr>`).join('');
-  const sum={};for(const t of STAT_TYPES) sum[t.id]={count:0,total:0,label:t.label,icon:t.icon};
-  for(const e of stat.log){if(sum[e.type]){sum[e.type].count++;sum[e.type].total+=e.duration;}}
-  const sumItems=Object.values(sum).filter(s=>s.count>0).map(s=>`<div class="stat-sum-item"><div class="ss-label">${s.icon} ${s.label}</div><div class="ss-val">${formatDur(s.total)} <span style="color:var(--muted);font-size:.72rem">(${s.count}×)</span></div></div>`).join('');
-  el.innerHTML=`<div class="stat-log-wrap"><table class="stat-log"><thead><tr><th>Tip</th><th>Descriere</th><th>Start</th><th>Stop</th><th>Durată</th></tr></thead><tbody>${rows}</tbody></table></div>${sumItems?`<div class="stat-summary">${sumItems}</div>`:''}`;
-}
-function getStatColor(type){const colors={CTC:'background:rgba(240,160,0,.12);color:var(--accent);border:1px solid rgba(240,160,0,.3)',MP:'background:rgba(77,155,255,.12);color:var(--bodor);border:1px solid rgba(77,155,255,.3)',PROG:'background:rgba(123,97,255,.12);color:var(--info);border:1px solid rgba(123,97,255,.3)',DEF:'background:rgba(239,83,80,.1);color:var(--warn);border:1px solid rgba(239,83,80,.3)',VR:'background:rgba(255,179,0,.1);color:#ffb300;border:1px solid rgba(255,179,0,.3)'};return colors[type]||'';}
-function formatTime(ts){return new Date(ts).toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
-
-
-// ── 10. Stationari log – salveaza evenimentele în DB ──
-const _origStatStop=statStop;
-statStop=async function(){
-  const ev=stat.active?{...stat.active}:null;
-  _origStatStop();
-  if(ev&&sb&&currentUser){
-    await sb.from('stationari_log').insert({
-      stat_type:ev.type,label:ev.label||'',icon:ev.icon||'',
-      description:ev.desc||'',
-      start_time:new Date(ev.startTime).toISOString(),
-      end_time:new Date().toISOString(),
-      duration:Date.now()-ev.startTime,
-      logged_by:currentUser.id
-    });
-  }
-};
-
-// ── Override tab switch ──
-const _origSwitchTab=switchTab;
-switchTab=function(tab){_origSwitchTab(tab);if(tab==='stocuri') renderStocuri();if(tab==='utilizatori') renderUtilizatori();};
-
-// ── Override doPostLoadRender ──
-const _origDoPost=doPostLoadRender;
-doPostLoadRender=async function(){
-  _origDoPost();
-  const sources=[...new Set(allPrograms.map(p=>p.source))];
-  let saveOk=true;
-  for(const src of sources){try{await saveNestToSupabase(src,allPrograms.filter(p=>p.source===src));}catch(e){saveOk=false;console.warn(e);}}
-  if(saveOk) showToast('Nesturi salvate în Supabase');
-  else showToast('Eroare la salvare în Supabase','err');
-};
-
-// ── Override deleteNest ──
-const _origDeleteNest=deleteNest;
-deleteNest=function(src){
-  const confirmed=confirm('Șterge nestul "'+src+'" din listă?');
-  if(!confirmed) return;
-  for(let i=allPrograms.length-1;i>=0;i--){if(allPrograms[i].source===src) allPrograms.splice(i,1);}
-  delete scheduleData[src];
-  [...expandedRows].forEach(k=>{if(k.startsWith(src+'|||')) expandedRows.delete(k);});
-  refreshStats();updateTabCounts();
-  renderNesturi();if(activeTab==='picking') renderPicking();if(activeTab==='raportare') renderRaportare();
-  deleteNestFromSupabase(src);
-  deleteImageCache(src); // șterge și cache-ul local de imagini
-};
-
-
-// ══ CONFIG WIZARD FUNCTIONS ══
-
-function cfgValidate(inp, type){
-  const v=inp.value.trim();
-  if(type==='url'){
-    inp.classList.toggle('valid', v.includes('supabase.co'));
-    inp.classList.toggle('invalid', v.length>10 && !v.includes('supabase'));
-  } else if(type==='key'){
-    inp.classList.toggle('valid', v.startsWith('eyJ'));
-    inp.classList.toggle('invalid', v.length>10 && !v.startsWith('eyJ'));
-  }
-}
-
-async function cfgTest(){
-  const url=(document.getElementById('cfg-url').value||'').trim().replace(/\/$/,'');
-  const anon=(document.getElementById('cfg-anon').value||'').trim();
-  const res=document.getElementById('cfg-test-result');
-  if(!url||!anon){res.textContent='⚠ Completează URL și Anon Key mai întâi.';res.style.color='var(--warn)';return;}
-  res.textContent='Se testează...';res.style.color='var(--muted)';
+async function createUser(){
+  const name=document.getElementById('nu-name').value.trim();
+  const email=document.getElementById('nu-email').value.trim();
+  const pass=document.getElementById('nu-pass').value;
+  const role=document.getElementById('nu-role').value;
+  const errEl=document.getElementById('user-err');
+  if(!name||!email||!pass){errEl.textContent='Completează toate câmpurile.';errEl.style.display='block';return;}
+  if(!canCreateRole(role)){errEl.textContent='Nu ai dreptul să creezi utilizatori cu acest rol.';errEl.style.display='block';return;}
   try{
-    const testClient=window.supabase.createClient(url, anon);
-    // Încearcă un query simplu
-    const{error}=await testClient.from('profiles').select('id').limit(1);
-    if(error && error.code!=='PGRST116' && !error.message.includes('does not exist')){
-      throw new Error(error.message);
-    }
-    res.textContent='✓ Conexiune reușită!';res.style.color='var(--ok)';
-  }catch(e){
-    res.textContent='✗ '+e.message;res.style.color='var(--warn)';
-  }
+    const{data,error}=await sbAdmin.auth.admin.createUser({email,password:pass,email_confirm:true,user_metadata:{display_name:name,role}});
+    if(error) throw error;
+    errEl.style.display='none';
+    document.getElementById('nu-name').value='';document.getElementById('nu-email').value='';document.getElementById('nu-pass').value='';
+    renderUtilizatori();
+  }catch(e){errEl.textContent='Eroare: '+(e.message||String(e));errEl.style.display='block';}
+}
+async function editUserRole(uid,crtRole){
+  const newRole=prompt('Rol nou (developer/admin/operator/picker):',crtRole);
+  if(!newRole||newRole===crtRole) return;
+  if(!['developer','admin','operator','picker'].includes(newRole)){alert('Rol invalid.');return;}
+  await sb.from('profiles').update({role:newRole}).eq('id',uid);
+  renderUtilizatori();
+}
+async function deactivateUser(uid){
+  if(!confirm('Dezactivezi acest utilizator?')) return;
+  await sb.from('profiles').update({active:false}).eq('id',uid);
+  if(sbAdmin) await sbAdmin.auth.admin.updateUserById(uid,{ban_duration:'87600h'});
+  renderUtilizatori();
 }
 
-function saveConfig(){
-  const url=(document.getElementById('cfg-url').value||'').trim().replace(/\/$/,'');
-  const anon=(document.getElementById('cfg-anon').value||'').trim();
-  const service=(document.getElementById('cfg-service').value||'').trim();
-  const errEl=document.getElementById('cfg-err');
-
-  if(!url||!url.includes('supabase')){
-    errEl.textContent='URL-ul Supabase nu este valid. Ex: https://xxxx.supabase.co';
-    errEl.classList.add('show');return;
-  }
-  if(!anon||!anon.startsWith('eyJ')){
-    errEl.textContent='Anon Key nu este valid (trebuie să înceapă cu eyJ...).';
-    errEl.classList.add('show');return;
-  }
-  errEl.classList.remove('show');
-
-  // Salvează în localStorage
-  localStorage.setItem(LS.url, url);
-  localStorage.setItem(LS.anon, anon);
-  if(service && service.startsWith('eyJ')) localStorage.setItem(LS.service, service);
-  else localStorage.removeItem(LS.service);
-
-  // Inițializează Supabase cu noile chei
-  if(initSupabaseWith(url, anon, service)){
-    document.getElementById('config-screen').style.display='none';
-    document.getElementById('auth-screen').style.display='flex';
-    // Setează listener
-    sb.auth.onAuthStateChange(async(_e,session)=>{
-      if(session?.user&&!currentUser) await onLoginSuccess(session.user);
-      else if(!session&&currentUser){
-        currentUser=null;currentProfile=null;
-        document.getElementById('auth-screen').style.display='flex';
-      }
-    });
-  } else {
-    errEl.textContent='Inițializare Supabase eșuată. Verifică valorile introduse.';
-    errEl.classList.add('show');
-  }
-}
-
-function showConfigScreen(){
-  // Pre-populează cu valorile curente
-  const cfg=loadLocalConfig();
-  document.getElementById('cfg-url').value=isPlaceholder(cfg.url)?'':cfg.url;
-  document.getElementById('cfg-anon').value=isPlaceholder(cfg.anon)?'':cfg.anon;
-  document.getElementById('cfg-service').value=isPlaceholder(cfg.service)?'':cfg.service||'';
-  document.getElementById('cfg-test-result').textContent='';
-  document.getElementById('cfg-err').classList.remove('show');
-  document.getElementById('auth-screen').style.display='none';
-  document.getElementById('config-screen').style.display='flex';
-}
-
-function clearConfig(){
-  localStorage.removeItem(LS.url);
-  localStorage.removeItem(LS.anon);
-  localStorage.removeItem(LS.service);
-  location.reload();
-}
-
-// ── Init ──
-async function initApp(){
-  const cfg=loadLocalConfig();
-
-  if(!isConfigValid(cfg)){
-    // Nicio configurare salvată → afișează wizard
-    document.getElementById('config-screen').style.display='flex';
-    document.getElementById('auth-screen').style.display='none';
-    return;
-  }
-
-  initSupabaseWith(cfg.url, cfg.anon, cfg.service);
-
-  if(!sb){setupOfflineMode();return;}
-
-  try{
-    const{data:{session}}=await sb.auth.getSession();
-    if(session?.user) await onLoginSuccess(session.user);
-    else document.getElementById('auth-screen').style.display='flex';
-  }catch(e){
-    // Cheile pot fi greșite → arată config screen cu eroare
-    document.getElementById('config-screen').style.display='flex';
-    document.getElementById('auth-screen').style.display='none';
-    const errEl=document.getElementById('cfg-err');
-    errEl.textContent='Eroare de conexiune: '+e.message+'. Verifică URL-ul și cheia Anon.';
-    errEl.classList.add('show');
-    // Pre-populează câmpurile
-    document.getElementById('cfg-url').value=cfg.url||'';
-    document.getElementById('cfg-anon').value=cfg.anon||'';
-    return;
-  }
-
-  let _oasProcessing=false;
+/* ── AUTH LISTENER ── */
+function setupAuthListener(){
+  if(!sb) return;
   sb.auth.onAuthStateChange(async(event,session)=>{
-    console.log('[NestViewer] AuthStateChange:',event,session?.user?.email||'no user');
+    console.log('[NV] AuthStateChange:',event,session?.user?.email||'no user');
     if((event==='SIGNED_IN'||event==='INITIAL_SESSION')&&session?.user&&!currentUser&&!_oasProcessing){
-      _oasProcessing=true;
-      clearTimeout(window._loginTimeout); // anulează fallback-ul
+      _oasProcessing=true;clearTimeout(window._loginTimeout);
       await onLoginSuccess(session.user);
       _oasProcessing=false;
     } else if(event==='SIGNED_OUT'&&currentUser){
@@ -2349,13 +2153,38 @@ async function initApp(){
   });
 }
 
+/* ── INIT ── */
+async function initApp(){
+  const cfg=loadLocalConfig();
+  if(!isConfigValid(cfg)){
+    document.getElementById('config-screen').style.display='flex';
+    document.getElementById('auth-screen').style.display='none';
+    return;
+  }
+  initSupabaseWith(cfg.url,cfg.anon,cfg.service);
+  if(!sb){setupOfflineMode();return;}
+  setupAuthListener();
+  try{
+    const{data:{session}}=await sb.auth.getSession();
+    if(session?.user) await onLoginSuccess(session.user);
+    else document.getElementById('auth-screen').style.display='flex';
+  }catch(e){
+    console.error('[NV] initApp error:',e);
+    document.getElementById('config-screen').style.display='flex';
+    document.getElementById('auth-screen').style.display='none';
+    const errEl=document.getElementById('cfg-err');
+    if(errEl){errEl.textContent='Eroare conexiune: '+e.message+'. Verifică URL și cheile.';errEl.classList.add('show');}
+    const urlEl=document.getElementById('cfg-url');if(urlEl) urlEl.value=cfg.url||'';
+    const anonEl=document.getElementById('cfg-anon');if(anonEl) anonEl.value=cfg.anon||'';
+  }
+}
+
 document.addEventListener('keydown',e=>{
-  if(e.key==='Enter'&&document.getElementById('auth-screen').style.display!=='none'){
-    if(document.getElementById('auth-login-form').style.display!=='none') authLogin();
+  if(e.key==='Enter'&&document.getElementById('auth-screen')?.style.display!=='none'){
+    if(document.getElementById('auth-login-form')?.style.display!=='none') authLogin();
   }
 });
 
-// Start app
 initApp();
 </script>
 </body>
