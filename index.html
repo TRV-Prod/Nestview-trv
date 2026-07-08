@@ -386,7 +386,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
 
 
 <!-- ══ CONFIG WIZARD ══ -->
-<div id="config-screen">
+<div id="config-screen" style="display:none">
   <div class="cfg-box">
     <div class="auth-logo" style="margin-bottom:16px"><div class="al">⬛</div></div>
     <div class="auth-title" style="margin-bottom:4px">Configurare Supabase</div>
@@ -456,7 +456,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
 
 
 <!-- ══ AUTH SCREEN ══ -->
-<div id="auth-screen">
+<div id="auth-screen" style="display:none">
   <div class="auth-box">
     <div class="auth-logo"><div class="al">⬛</div></div>
     <div class="auth-title">Nest Viewer</div>
@@ -1625,6 +1625,10 @@ function saveConfig(){
   if(service&&service.startsWith('eyJ')) localStorage.setItem(LS.service,service);
   else localStorage.removeItem(LS.service);
   if(initSupabaseWith(url,anon,service)){
+    // Șterge orice sesiune veche — userul TREBUIE să se logheze explicit după configurare nouă
+    sb.auth.signOut().catch(()=>{});
+    // Șterge cheile de sesiune vechi din localStorage
+    Object.keys(localStorage).filter(k=>k.startsWith('nv_auth')||k.startsWith('sb-')).forEach(k=>localStorage.removeItem(k));
     document.getElementById('config-screen').style.display='none';
     document.getElementById('auth-screen').style.display='flex';
     setupAuthListener();
@@ -1792,14 +1796,29 @@ async function onLoginSuccess(user){
 
 function setupAppUI(){
   document.getElementById('auth-screen').style.display='none';
+  document.getElementById('config-screen').style.display='none';
   document.getElementById('user-info-bar').style.display='flex';
   const name=currentProfile?.display_name||currentProfile?.email||'User';
   const initials=name.split(' ').map(w=>w[0]||'').join('').slice(0,2).toUpperCase()||'?';
   document.getElementById('user-avatar').textContent=initials;
   document.getElementById('user-role-badge').innerHTML=roleBadge(currentProfile?.role||'operator');
-  document.getElementById('t-stocuri').style.display='block';
+
+  // Tab-uri bazate pe rol
+  document.getElementById('t-stocuri').style.display='block'; // toți utilizatorii
+  // Nesturi tab — vizibil pentru operator+
+  const tNest=document.getElementById('t-nesturi');
+  if(tNest) tNest.style.display=canImportNests()||currentProfile?.role==='picker'?'block':'none';
+  // Picking — toți
+  const tPick=document.getElementById('t-picking');if(tPick) tPick.style.display='block';
+  // Raportare — operator+
+  const tRap=document.getElementById('t-raportare');
+  if(tRap) tRap.style.display=canRaportare()?'block':'none';
+  // Utilizatori — dev/admin
   if(canManageUsers()) document.getElementById('t-utilizatori').style.display='block';
-  // Dropzone visible only on Nesturi + only for operator+
+
+  // Picker → redirect la Picking tab
+  if(currentProfile?.role==='picker') switchTab('picking');
+
   updateDropzoneVisibility();
 }
 
@@ -2206,13 +2225,16 @@ function setupAuthListener(){
   if(!sb) return;
   sb.auth.onAuthStateChange(async(event,session)=>{
     console.log('[NV] AuthStateChange:',event,session?.user?.email||'no user');
-    if((event==='SIGNED_IN'||event==='INITIAL_SESSION')&&session?.user&&!currentUser&&!_oasProcessing){
+    // INITIAL_SESSION din saveConfig() e blocat — userul trebuie să se logheze explicit
+    // SIGNED_IN = login explicit al userului → ok
+    if(event==='SIGNED_IN'&&session?.user&&!currentUser&&!_oasProcessing){
       _oasProcessing=true;clearTimeout(window._loginTimeout);
       await onLoginSuccess(session.user);
       _oasProcessing=false;
     } else if(event==='SIGNED_OUT'&&currentUser){
       currentUser=null;currentProfile=null;
       document.getElementById('auth-screen').style.display='flex';
+      document.getElementById('user-info-bar').style.display='none';
     }
   });
 }
