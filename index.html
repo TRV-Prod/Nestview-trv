@@ -337,6 +337,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
 <!-- ══ Supabase SDK ══ -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 
 </head>
 <body>
@@ -650,9 +651,12 @@ function switchTab(tab){
   if(tab==='raportare') renderRaportare();
 }
 function updateTabCounts(){
-  document.getElementById('tc-nesturi').textContent=allPrograms.length;
+  const srcCount=new Set(allPrograms.map(p=>p.source)).size;
+  document.getElementById('tc-nesturi').textContent=srcCount;
   document.getElementById('tc-picking').textContent=uniqueSheetKeys().length;
   document.getElementById('tc-raportare').textContent=allPrograms.length;
+  // Header stats
+  const nEl=document.getElementById('dzN');if(nEl) nEl.textContent=srcCount;
 }
 
 /* ══ File Handling ══ */
@@ -2105,48 +2109,160 @@ async function importStockFile(file){
 }
 
 /* ── RENDER STOCURI ── */
+function stockSortBy(col){
+  if(stockSort.col===col) stockSort.asc=!stockSort.asc;
+  else{stockSort.col=col;stockSort.asc=true;}
+  renderStocuri();
+}
+function stockFilterChange(col,val){
+  if(val) stockFilters[col]=val.toLowerCase();
+  else delete stockFilters[col];
+  renderStocuri();
+}
+function setStockFontSize(v){stockFontSize=parseInt(v)||13;renderStocuri();}
+
+function printLabel(row){
+  const cfg=labelConfig;
+  const vals=cfg.fields.map(f=>({k:f,v:String(row[f]||'')}));
+  const qrText=vals.map(x=>x.v).filter(Boolean).join('|');
+  const win=window.open('','_blank','width=420,height=380,toolbar=0,menubar=0');
+  if(!win) return;
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>Etichetă</title>
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"><\/script>
+    <style>
+      *{box-sizing:border-box;font-family:Arial,sans-serif;margin:0;padding:0}
+      body{padding:12px;background:#fff}
+      .label{border:2px solid #000;padding:10px;width:280px;margin:0 auto;background:#fff}
+      .qr-wrap{text-align:center;margin:6px 0}
+      .fields{margin-top:6px;border-top:1px solid #ccc;padding-top:6px}
+      .field{display:flex;gap:4px;font-size:10px;margin:2px 0;line-height:1.3}
+      .fk{font-weight:700;min-width:70px;color:#444}
+      .fv{font-weight:400;word-break:break-all}
+      @media print{body{padding:0}.no-print{display:none}}
+    </style></head><body>
+    <div class="no-print" style="margin-bottom:8px;text-align:center">
+      <button onclick="window.print()" style="padding:6px 16px;font-size:13px;cursor:pointer">🖨 Printează</button>
+      <button onclick="window.close()" style="padding:6px 12px;font-size:13px;cursor:pointer;margin-left:6px">✕</button>
+    </div>
+    <div class="label">
+      <div class="qr-wrap" id="qrc"></div>
+      <div class="fields">${vals.map(x=>`<div class="field"><span class="fk">${x.k}:</span><span class="fv">${x.v||'—'}</span></div>`).join('')}</div>
+    </div>
+    <script>
+      try{new QRCode(document.getElementById('qrc'),{text:${JSON.stringify(qrText)},width:120,height:120,correctLevel:QRCode.CorrectLevel.M});}
+      catch(e){document.getElementById('qrc').innerHTML='<div style="font-size:9px;color:red">QR error: '+e.message+'</div>';}
+    <\/script></body></html>`);
+  win.document.close();
+}
+
+function showLabelConfig(){
+  if(!canManageUsers()){alert('Doar Developer/Admin pot modifica configurația etichetei.');return;}
+  const allCols=stockHeaders.length?stockHeaders:['ITEM NR','LOTNR','ITEM NAME'];
+  const current=labelConfig.fields.join(', ');
+  const newFields=prompt('Câmpuri pe etichetă (separate cu virgulă):\nDisponibile: '+allCols.join(', '),current);
+  if(newFields===null) return;
+  labelConfig.fields=newFields.split(',').map(s=>s.trim()).filter(Boolean);
+  alert('Configurare salvată! Câmpuri: '+labelConfig.fields.join(', '));
+  renderStocuri();
+}
+
 function renderStocuri(){
   const el=document.getElementById('stocuri-main');
   if(!el) return;
-  const locTags=stockLocations.map(l=>`
+  const displayHeaders=stockHeaders.length?stockHeaders:['ITEM NR','ITEM NAME','ITEM DESCRIPTION','LOCATION','LOTNR','STANDARD QTY','STANDARD U/M','AVG'];
+
+  // Apply filters
+  let rows=stockRecords.map(r=>r.data||r);
+  Object.entries(stockFilters).forEach(([col,fval])=>{
+    rows=rows.filter(r=>String(r[col]||'').toLowerCase().includes(fval));
+  });
+  // Apply sort
+  if(stockSort.col){
+    const col=stockSort.col;const asc=stockSort.asc;
+    rows=[...rows].sort((a,b)=>{
+      const av=String(a[col]||''),bv=String(b[col]||'');
+      const an=parseFloat(av),bn=parseFloat(bv);
+      if(!isNaN(an)&&!isNaN(bn)) return asc?an-bn:bn-an;
+      return asc?av.localeCompare(bv):bv.localeCompare(av);
+    });
+  }
+
+  // Location tags
+  const locTags=(stockLocations||[]).map(l=>`
     <span class="stock-loc-tag">
       <span class="dtb dt-l" style="font-size:.66rem;padding:1px 6px">${esc(l.code)}</span>
       ${canImportNests()?`<button onclick="removeStockLocation('${esc(l.code)}')" title="Șterge">×</button>`:''}
     </span>`).join('');
-  const displayHeaders=stockHeaders.length?stockHeaders:['ITEM NR','ITEM NAME','ITEM DESCRIPTION','LOCATION','LOTNR','STANDARD QTY','STANDARD U/M','AVG'];
   const byLoc={};
-  stockRecords.forEach(r=>{const loc=String(r.data['LOCATION']||'').trim();if(!byLoc[loc]) byLoc[loc]=[];byLoc[loc].push(r.data);});
+  stockRecords.forEach(r=>{const d=r.data||r;const loc=String(d['LOCATION']||'').trim();if(!byLoc[loc]) byLoc[loc]=[];byLoc[loc].push(d);});
   const locSummary=Object.entries(byLoc).sort((a,b)=>a[0].localeCompare(b[0])).map(([loc,items])=>
     `<span class="stock-loc-tag"><span class="dtb dt-l" style="font-size:.66rem">${esc(loc)}</span><span style="font-size:.66rem;color:var(--accent);font-weight:700;margin-left:4px">${items.length}</span></span>`).join('');
-  const thSt='background:var(--surf2);padding:6px 9px;font-size:.6rem;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;position:sticky;top:0;';
-  const tableHeaders=displayHeaders.map(h=>`<th style="${thSt}">${esc(h)}</th>`).join('');
-  const recRows=stockRecords.slice(0,1000).map(r=>{
-    const row=r.data||{};
-    return `<tr>${displayHeaders.map(h=>{
-      let v=String(row[h]??'').trim();let s='padding:5px 9px;font-size:.75rem;border-bottom:1px solid rgba(42,47,74,.3);';
+
+  // Table: add Label column + sort/filter headers
+  const thSt=`background:var(--surf2);padding:0;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;position:sticky;top:0;z-index:2;`;
+  const thInner=(col)=>{
+    const si=stockSort.col===col?(stockSort.asc?'▲':'▼'):'⇅';
+    const fval=stockFilters[col]||'';
+    return `<div style="display:flex;flex-direction:column;min-width:80px">
+      <div style="display:flex;align-items:center;gap:4px;padding:5px 7px;cursor:pointer;font-size:.6rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);white-space:nowrap" onclick="stockSortBy('${esc(col)}')">
+        <span>${esc(col)}</span><span style="color:var(--dim)">${si}</span>
+      </div>
+      <div style="padding:0 4px 4px">
+        <input type="text" value="${esc(fval)}" placeholder="Filtrează…" style="width:100%;background:var(--surf3);border:1px solid var(--border);border-radius:4px;padding:2px 5px;font-size:.65rem;color:var(--text);outline:none"
+          oninput="stockFilterChange('${esc(col)}',this.value)">
+      </div>
+    </div>`;
+  };
+  const tableHeaders=`<th style="${thSt}min-width:70px"><div style="padding:5px 7px;font-size:.6rem;text-transform:uppercase;color:var(--muted)">Etichetă</div></th>`
+    +displayHeaders.map(h=>`<th style="${thSt}">${thInner(h)}</th>`).join('');
+
+  const fs=stockFontSize+'px';
+  const recRows=rows.slice(0,2000).map(row=>{
+    const cells=displayHeaders.map(h=>{
+      let v=String(row[h]??'').trim();
+      let s=`padding:4px 7px;font-size:${fs};border-bottom:1px solid rgba(42,47,74,.3);`;
       if(h==='LOCATION') s+='font-weight:700;color:var(--accent);font-family:var(--mono);';
-      if(h==='ITEM NR') s+='font-family:var(--mono);font-size:.72rem;';
+      if(h==='ITEM NR') s+='font-family:var(--mono);font-size:calc(${fs} - 1px);';
       if(h==='STANDARD QTY') s+='text-align:right;font-weight:600;color:var(--ok);';
       if(h==='AVG'&&v&&!isNaN(v)) v=parseFloat(v).toFixed(2);
       return `<td style="${s}">${esc(v)}</td>`;
-    }).join('')}</tr>`;
+    }).join('');
+    const labelBtn=`<td style="padding:3px 5px;border-bottom:1px solid rgba(42,47,74,.3);text-align:center">
+      <button onclick='printLabel(${JSON.stringify(row)})' title="Printează etichetă"
+        style="background:var(--surf2);border:1px solid var(--border);border-radius:4px;padding:2px 6px;cursor:pointer;font-size:.7rem;color:var(--muted)">🏷</button>
+    </td>`;
+    return `<tr>${labelBtn}${cells}</tr>`;
   }).join('');
+
   el.innerHTML=`
-    <div class="s-head">📍 Locații filtrate</div>
-    <div class="stock-loc-list">${locTags}</div>
-    ${canImportNests()?`<div class="stock-add-row"><input class="pk-input code" id="new-loc-inp" placeholder="Cod nou (ex: H8000)" style="width:140px" onkeydown="if(event.key==='Enter') addStockLocation()"><button class="btn-sm btn-start-def" onclick="addStockLocation()">+ Adaugă</button></div>`:''}
-    <div class="s-head" style="margin-top:4px">📂 Import stoc (CSV / Excel .xlsx)</div>
-    ${canImportNests()?`<div style="margin-bottom:12px"><input type="file" id="stock-file-inp" accept=".csv,.xlsx,.xls" style="display:none" onchange="importStockFile(this.files[0])"><button class="auth-btn" style="max-width:220px" onclick="document.getElementById('stock-file-inp').click()">📂 Selectează fișier</button></div>`:''}
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <div class="stock-loc-list" style="margin:0">${locTags}</div>
+      ${canImportNests()?`<div style="display:flex;gap:6px">
+        <input class="pk-input code" id="new-loc-inp" placeholder="Cod locație nou" style="width:130px" onkeydown="if(event.key==='Enter') addStockLocation()">
+        <button class="btn-sm btn-start-def" onclick="addStockLocation()">+</button>
+      </div>`:''}
+    </div>
     ${stockRecords.length?`
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
-        <span style="font-size:.78rem;font-weight:600">${stockRecords.length} înregistrări filtrate</span>${locSummary}
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+        <span style="font-size:.78rem;font-weight:600">${rows.length} / ${stockRecords.length} înregistrări</span>${locSummary}
+        <span style="margin-left:auto;display:flex;align-items:center;gap:6px;font-size:.72rem;color:var(--muted)">
+          Mărime text:
+          <input type="range" min="9" max="20" value="${stockFontSize}" style="width:80px" oninput="setStockFontSize(this.value)">
+          <span style="font-family:var(--mono);min-width:20px">${stockFontSize}</span>
+        </span>
+        ${canManageUsers()?`<button class="btn-sm btn-cancel-def" onclick="showLabelConfig()">⚙ Etichetă</button>`:''}
       </div>
-      <div style="overflow-x:auto;border-radius:var(--r);border:1px solid var(--border);max-height:65vh;overflow-y:auto">
-        <table style="border-collapse:collapse;width:100%;min-width:700px"><thead><tr>${tableHeaders}</tr></thead><tbody>${recRows}</tbody></table>
+      <div style="overflow:auto;border-radius:var(--r);border:1px solid var(--border);max-height:calc(100vh - 280px)">
+        <table style="border-collapse:collapse;width:100%;font-size:${fs}">
+          <thead><tr>${tableHeaders}</tr></thead>
+          <tbody>${recRows||'<tr><td colspan="'+(displayHeaders.length+1)+'" style="padding:12px;text-align:center;color:var(--dim)">Niciun rezultat pentru filtrele aplicate.</td></tr>'}</tbody>
+        </table>
       </div>
-      ${stockRecords.length>1000?`<div style="padding:8px;font-size:.72rem;color:var(--muted);text-align:center">Primele 1000 din ${stockRecords.length}.</div>`:''}
-    `:'<div class="empty-state" style="padding:24px"><div class="et">Importă un fișier Excel (.xlsx) sau CSV filtrat pe locații.<br>Poți trage fișierul direct pe pagină!</div></div>'}`;
+      ${rows.length>2000?`<div style="padding:6px;font-size:.72rem;color:var(--muted);text-align:center">Afișate primele 2000 din ${rows.length}.</div>`:''}
+    `:'<div class="empty-state" style="padding:24px"><div class="et">Importă un fișier Excel (.xlsx) sau CSV.</div></div>'}`;
 }
+
 
 /* ── USER MANAGEMENT ── */
 async function renderUtilizatori(){
