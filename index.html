@@ -467,8 +467,8 @@ table.stat-log tr:last-child td{border-bottom:none;}
       <input type="password" class="auth-inp" id="auth-pass" placeholder="Parolă" autocomplete="current-password">
       <button class="auth-btn" id="btn-login" onclick="authLogin()">Intră în aplicație</button>
       <div class="auth-toggle" style="margin-top:12px;font-size:.8rem">Nu ai cont încă? <a onclick="authShowRegister()" style="font-weight:700;color:var(--accent)">→ Înregistrare</a></div>
-    <div class="auth-toggle" style="margin-top:6px">
-      <a onclick="showConfigScreen()" style="font-size:.7rem;color:var(--dim)">⚙ Schimbă server Supabase</a>
+    <div style="margin-top:10px;text-align:center">
+      <a onclick="showConfigScreen()" style="font-size:.65rem;color:rgba(255,255,255,.2);cursor:pointer;text-decoration:none" title="Reconfigurează Supabase (doar la schimbarea serverului)">⚙ server</a>
     </div>
     </div>
     <div id="auth-reg-form" style="display:none">
@@ -655,11 +655,15 @@ function switchTab(tab){
 
 function updateTabCounts(){
   const srcCount=new Set(allPrograms.map(p=>p.source)).size;
+  const progCount=allPrograms.length;
+  const pickCount=uniqueSheetKeys().length;
   document.getElementById('tc-nesturi').textContent=srcCount;
-  document.getElementById('tc-picking').textContent=uniqueSheetKeys().length;
-  document.getElementById('tc-raportare').textContent=allPrograms.length;
-  // Header stats
+  document.getElementById('tc-picking').textContent=pickCount;
+  document.getElementById('tc-raportare').textContent=progCount;
   const nEl=document.getElementById('dzN');if(nEl) nEl.textContent=srcCount;
+  // Header stat boxes
+  const hSrc=document.querySelector('.stat-box:nth-child(1) .sv');if(hSrc) hSrc.textContent=srcCount;
+  const hProg=document.querySelector('.stat-box:nth-child(2) .sv');if(hProg) hProg.textContent=progCount;
 }
 
 /* ══ File Handling ══ */
@@ -1564,6 +1568,51 @@ stat.runStart=Date.now();
 startStatTimer();
 </script>
 
+
+<script>
+/* ══ FUNCȚII BAZĂ — necesare înainte de blocul de autentificare ══ */
+
+function fmtReservedAt(iso){
+  if(!iso) return '—';
+  const d=new Date(iso);
+  const dd=String(d.getDate()).padStart(2,'0'),mm=String(d.getMonth()+1).padStart(2,'0'),yy=d.getFullYear();
+  const hh=String(d.getHours()).padStart(2,'0'),mn=String(d.getMinutes()).padStart(2,'0');
+  return dd+'.'+mm+'.'+yy+' '+hh+':'+mn;
+}
+
+function deleteNest(src){
+  // Versiune bază — suprascrisă de blocul auth (care adaugă ștergere din Supabase)
+  if(!confirm('Șterge nestul "'+src+'" din listă?')) return;
+  for(let i=allPrograms.length-1;i>=0;i--){if(allPrograms[i].source===src) allPrograms.splice(i,1);}
+  delete scheduleData[src];
+  [...expandedRows].forEach(k=>{if(k.startsWith(src+'|||')) expandedRows.delete(k);});
+  refreshStats();updateTabCounts();
+  renderNesturi();
+  if(typeof renderPicking==='function') renderPicking();
+  if(typeof renderRaportare==='function') renderRaportare();
+}
+
+function ocConfirm(){
+  const reason=document.getElementById('oc-reason')?.value.trim();
+  if(!reason){document.getElementById('oc-reason')?.classList.add('err');document.getElementById('oc-hint')?.classList.add('show');return;}
+  if(!ocPending) return;
+  const{ok,value}=ocPending;
+  if(!opData[ok]) opData[ok]={coliDebitate:'',motivDepasire:'',completedAt:null,numOfSheetOverride:null};
+  opData[ok].coliDebitate=value;opData[ok].motivDepasire=reason;opData[ok].completedAt=new Date().toISOString();
+  document.getElementById('oc-modal').style.display='none';ocPending=null;
+  if(typeof renderRaportare==='function') renderRaportare();
+}
+
+function ocCancel(){
+  if(ocPending?.el) ocPending.el.value=ocPending.prevValue||'';
+  document.getElementById('oc-modal').style.display='none';
+  document.getElementById('oc-reason')?.classList.remove('err');
+  document.getElementById('oc-hint')?.classList.remove('show');
+  ocPending=null;
+}
+
+</script>
+
 <script>
 /* ═══════════════════════════════════════════════════════════
    CONFIG + AUTH + SUPABASE SYNC
@@ -1578,7 +1627,7 @@ const CONFIG = {
 const LS = { url:'nv_sb_url', anon:'nv_sb_anon', service:'nv_sb_service' };
 
 let sb=null, sbAdmin=null, currentUser=null, currentProfile=null;
-let _realtimeSubs=[], _oasProcessing=false;
+let _realtimeSubs=[], _oasProcessing=false, _savingToDb=false;
 
 function loadLocalConfig(){
   return {
@@ -1917,10 +1966,16 @@ async function initDefaultLocations(){
 function setupRealtime(){
   if(!sb) return;
   _realtimeSubs.forEach(s=>s?.unsubscribe?.());_realtimeSubs=[];
+  let _rtTimer=null;
+  const debouncedLoad=()=>{
+    if(_savingToDb) return; // ignore proprio noastre salvări
+    clearTimeout(_rtTimer);
+    _rtTimer=setTimeout(()=>loadAllData(),1500);
+  };
   const ch=sb.channel('nv-sync')
-    .on('postgres_changes',{event:'*',schema:'public',table:'nests'},()=>loadAllData())
-    .on('postgres_changes',{event:'*',schema:'public',table:'picking_data'},()=>{if(sb) loadAllData();})
-    .on('postgres_changes',{event:'*',schema:'public',table:'operational_data'},()=>{if(sb) loadAllData();})
+    .on('postgres_changes',{event:'*',schema:'public',table:'nests'},debouncedLoad)
+    .on('postgres_changes',{event:'*',schema:'public',table:'picking_data'},debouncedLoad)
+    .on('postgres_changes',{event:'*',schema:'public',table:'operational_data'},debouncedLoad)
     .on('postgres_changes',{event:'*',schema:'public',table:'stock_locations'},async()=>{
       const{data}=await sb.from('stock_locations').select('*').order('sort_order');
       if(data) stockLocations=data;
@@ -1935,15 +1990,22 @@ async function saveNestToSupabase(source,programs){
   if(!sb||!currentUser) return;
   saveImagesToCache(source,programs);
   const canStore=storageUsedBytes<STORAGE_LIMIT;
+  // Fiecare program e curățat individual — o eroare nu afectează restul
   const progsCleaned=await Promise.all(programs.map(async p=>{
-    const partsCleaned=await Promise.all((p.parts||[]).map(async x=>{
-      let imageUrl=x.imageUrl||null;
-      if(!imageUrl&&x.imageDataUrl&&canStore) imageUrl=await uploadImageToStorage(source,x.alias,x.imageDataUrl);
-      return{...x,imageDataUrl:null,imageUrl};
-    }));
-    let thumbnailUrl=p.thumbnailUrl||null;
-    if(!thumbnailUrl&&p.thumbnail&&canStore) thumbnailUrl=await uploadImageToStorage(source,'__thumb__',p.thumbnail);
-    return{...p,parts:partsCleaned,thumbnail:null,thumbnailUrl};
+    try{
+      const partsCleaned=await Promise.all((p.parts||[]).map(async x=>{
+        let imageUrl=x.imageUrl||null;
+        try{if(!imageUrl&&x.imageDataUrl&&canStore) imageUrl=await uploadImageToStorage(source,x.alias,x.imageDataUrl);}catch(_){}
+        return{...x,imageDataUrl:null,imageUrl};
+      }));
+      let thumbnailUrl=p.thumbnailUrl||null;
+      try{if(!thumbnailUrl&&p.thumbnail&&canStore) thumbnailUrl=await uploadImageToStorage(source,'__thumb__',p.thumbnail);}catch(_){}
+      return{...p,parts:partsCleaned,thumbnail:null,thumbnailUrl};
+    }catch(e){
+      console.warn('saveNest program error:',e.message);
+      // Salvează programul fără imagini dacă ceva eșuează
+      return{...p,parts:(p.parts||[]).map(x=>({...x,imageDataUrl:null,imageUrl:x.imageUrl||null})),thumbnail:null,thumbnailUrl:p.thumbnailUrl||null};
+    }
   }));
   const first=programs[0];
   const payload={source,machine:first?.machine||'',job_name:first?.nestName||source,
@@ -2025,13 +2087,18 @@ doPostLoadRender=async function(){
   _origDoPost();
   const sources=[...new Set(allPrograms.map(p=>p.source))];
   let saveOk=true;
-  for(const src of sources){
-    try{await saveNestToSupabase(src,allPrograms.filter(p=>p.source===src));}
-    catch(e){saveOk=false;console.warn(e);}
+  _savingToDb=true; // blochează realtime reload în timpul salvării
+  try{
+    for(const src of sources){
+      try{await saveNestToSupabase(src,allPrograms.filter(p=>p.source===src));}
+      catch(e){saveOk=false;console.warn('saveNest:',e);}
+    }
+  }finally{
+    _savingToDb=false;
   }
   refreshStorageUsage();
   if(saveOk) showToast('✓ Nesturi salvate în Supabase');
-  else showToast('⚠ Eroare la salvare în Supabase','err');
+  else showToast('⚠ Eroare parțială la salvare','err');
 };
 
 const _origDeleteNest=deleteNest;
@@ -2162,7 +2229,7 @@ function printLabel(row){
     <script>
       try{new QRCode(document.getElementById('qrc'),{text:${JSON.stringify(qrText)},width:120,height:120,correctLevel:QRCode.CorrectLevel.M});}
       catch(e){document.getElementById('qrc').innerHTML='<div style="font-size:9px;color:red">QR error: '+e.message+'</div>';}
-    <\/script></body></html>`);
+    <\/script>`);
   win.document.close();
 }
 
@@ -2400,9 +2467,13 @@ async function initApp(){
     _showConfigScreen('Eroare Supabase: verifică URL-ul și Anon Key din configurare.');return;
   }
 
-  // Șterge sesiunea cached → login obligatoriu
+  // Șterge DOAR sesiunea (nu configurația) → login obligatoriu la fiecare pornire
   try{await sb.auth.signOut();}catch(_){}
-  Object.keys(localStorage).filter(k=>k.startsWith('nv_auth')||k.startsWith('sb-')).forEach(k=>localStorage.removeItem(k));
+  // Curăță NUMAI cheile de sesiune auth, nu cheile de config (nv_sb_*)
+  Object.keys(localStorage).filter(k=>
+    (k.startsWith('nv_auth')&&!k.startsWith('nv_sb_'))||
+    k.startsWith('sb-')
+  ).forEach(k=>localStorage.removeItem(k));
 
   // auth-screen rămâne vizibil, setează listener
   setupAuthListener();
