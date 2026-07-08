@@ -2249,20 +2249,15 @@ async function initApp(){
   }
   initSupabaseWith(cfg.url,cfg.anon,cfg.service);
   if(!sb){setupOfflineMode();return;}
+  // Șterge orice sesiune existentă — loginul e OBLIGATORIU la fiecare pornire
+  try{ await sb.auth.signOut(); }catch(_){}
+  Object.keys(localStorage)
+    .filter(k=>k.startsWith('nv_auth')||k.startsWith('sb-'))
+    .forEach(k=>localStorage.removeItem(k));
+
+  // Arată întotdeauna ecranul de login
+  document.getElementById('auth-screen').style.display='flex';
   setupAuthListener();
-  try{
-    const{data:{session}}=await sb.auth.getSession();
-    if(session?.user) await onLoginSuccess(session.user);
-    else document.getElementById('auth-screen').style.display='flex';
-  }catch(e){
-    console.error('[NV] initApp error:',e);
-    document.getElementById('config-screen').style.display='flex';
-    document.getElementById('auth-screen').style.display='none';
-    const errEl=document.getElementById('cfg-err');
-    if(errEl){errEl.textContent='Eroare conexiune: '+e.message+'. Verifică URL și cheile.';errEl.classList.add('show');}
-    const urlEl=document.getElementById('cfg-url');if(urlEl) urlEl.value=cfg.url||'';
-    const anonEl=document.getElementById('cfg-anon');if(anonEl) anonEl.value=cfg.anon||'';
-  }
 }
 
 document.addEventListener('keydown',e=>{
