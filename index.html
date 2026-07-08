@@ -580,7 +580,6 @@ let activeTab='nesturi',nestFilter='all',pickFilter='all';
 let rapSearch='',rapMachine='Toate',rapFormat='Toate';
 let rapSort={col:'prio',asc:true};
 const scheduleData={};
-let schedQueue=[];
 const expandedRows=new Set();
 let ocPending=null;     // {ok,value,nec,sid,prevValue,el}
 
@@ -797,10 +796,63 @@ async function processFiles(files){
     if(ext==='html'||ext==='htm') await handleHTML(f);
     else if(ext==='pdf') await handlePDF(f);
     else if(['xlsx','xls','xlsm','csv'].includes(ext)){
-      switchTab('stocuri');
-      await importStockFile(f);
+      if(typeof switchTab==='function') switchTab('stocuri');
+      if(typeof importStockFile==='function') await importStockFile(f);
+      else console.warn('importStockFile not ready yet');
     }
   }
+}
+
+/* ══ SCHEDULE + PRIORITY HELPERS ══ */
+function ensureSchedule(src){if(!scheduleData[src]) scheduleData[src]={schedNo:'',priority:0};}
+function getSchedNo(src){return scheduleData[src]?.schedNo||'';}
+function schedNr(src){return getSchedNo(src);}
+function getPriority(src){return parseInt(scheduleData[src]?.priority)||0;}
+function scheduleInput(el,src){
+  ensureSchedule(src);scheduleData[src].schedNo=el.value;
+  document.querySelectorAll('.sched-inp[data-src]').forEach(i=>{if(i!==el&&i.dataset.src===src) i.value=el.value;});
+  if(typeof renderPicking==='function'&&activeTab==='picking') renderPicking();
+  if(typeof renderRaportare==='function'&&activeTab==='raportare') renderRaportare();
+}
+function setPriority(src,val){
+  ensureSchedule(src);scheduleData[src].priority=parseInt(val)||0;
+  if(typeof renderPicking==='function'&&activeTab==='picking') renderPicking();
+  if(typeof renderRaportare==='function'&&activeTab==='raportare') renderRaportare();
+}
+let schedQueue=[];
+function showNextSchedPrompt(){
+  if(!schedQueue.length){doPostLoadRender();return;}
+  const src=schedQueue[0];
+  document.getElementById('sched-msg-src').textContent=src;
+  const inp=document.getElementById('sched-inp-modal');
+  inp.value=getSchedNo(src)||'035602';
+  document.getElementById('sched-modal').style.display='flex';
+  setTimeout(()=>{inp.focus();inp.select();},80);
+}
+function schedConfirm(){
+  const src=schedQueue.shift();
+  ensureSchedule(src);scheduleData[src].schedNo=document.getElementById('sched-inp-modal').value.trim();
+  document.getElementById('sched-modal').style.display='none';
+  showNextSchedPrompt();
+}
+function schedCancel(){
+  schedQueue.shift();
+  document.getElementById('sched-modal').style.display='none';
+  showNextSchedPrompt();
+}
+function doPostLoadRender(){
+  refreshStats();updateTabCounts();
+  if(allPrograms.length){
+    dz.classList.add('has-files');
+    const icon=document.getElementById('dzIcon');if(icon) icon.textContent='✅';
+    const lbl=document.getElementById('dzLabel');if(lbl) lbl.innerHTML='Adaugă<br>mai multe';
+    const cnt=document.getElementById('dzCnt');if(cnt) cnt.style.display='block';
+    const n=document.getElementById('dzN');if(n) n.textContent=new Set(allPrograms.map(p=>p.source)).size;
+    document.getElementById('nestFilterBar').style.display='flex';
+  }
+  renderNesturi();
+  if(activeTab==='picking'&&typeof renderPicking==='function') renderPicking();
+  if(activeTab==='raportare'&&typeof renderRaportare==='function') renderRaportare();
 }
 
 function onLoaded(programs){
