@@ -1219,9 +1219,10 @@ function formatTime(ts){return new Date(ts).toLocaleTimeString('ro-RO',{hour:'2-
 
 /* ══ RENDER CARD ══ */
 function renderCard(data,container){
-  if(!data||!data.programName) return; // guard: skip invalid programs
+  if(!data||typeof data!=='object') return;
   const isL=data.type==='l3030';
-  const prog=data.programName;
+  // Fallback complet — niciun program nu e sărit indiferent de câmpuri lipsă
+  const prog=data.programName||data.result||data.job_name||data.source||'Program';
   const parts=Array.isArray(data.parts)?data.parts:[];
   const rpt=isL?(data.rpt||'1'):(data.numOfSheet||0);
   const hasImg=parts.some(x=>x.imageDataUrl||x.imageUrl);
@@ -1238,7 +1239,7 @@ function renderCard(data,container){
         <td class="alias-cell">${x.alias}</td><td><span class="pcs-pill">${x.pcs}</span></td>
       </tr>`;
     }).join('');
-    partsHTML=`<div class="sec-hd">${data.parts.length} ${parts.length===1?'tip piesă':'tipuri piese'}</div>
+    partsHTML=`<div class="sec-hd">${parts.length} ${parts.length===1?'tip piesă':'tipuri piese'}</div>
     <div class="parts-wrap"><table class="pt"><thead><tr><th>#</th>${hasImg?'<th>Imagine</th>':''}<th>Alias</th><th>Buc.</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }
   const thumbHTML=thumb?`<div class="thumb-section"><div class="sec-hd" style="margin-top:11px">Preview</div><img src="${thumb}" loading="lazy"></div>`:'';
@@ -1975,6 +1976,9 @@ async function loadAllData(){
   const{data:sr}=await sb.from('stock_records').select('*').order('imported_at',{ascending:false}).limit(2000);
   if(sr&&sr.length){stockRecords=sr.map(r=>({data:r.data}));if(stockRecords[0]?.data) stockHeaders=Object.keys(stockRecords[0].data);}
 
+  console.log('[NV] loadAllData complete: allPrograms=',allPrograms.length,
+    'sources=',new Set(allPrograms.map(p=>p.source)).size,
+    'sample prog:',allPrograms[0]?.programName||allPrograms[0]?.source||'none');
   restoreImagesFromCache();
   refreshStats();updateTabCounts();
   renderNesturi();
