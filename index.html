@@ -538,9 +538,18 @@ table.stat-log tr:last-child td{border-bottom:none;}
 </div>
 </div>
 <div id="view-stocuri" class="view">
+  <div style="padding:10px 16px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <strong style="font-size:.82rem;color:var(--text)">📦 Import Stocuri</strong>
+    <input type="file" id="stock-file-inp-top" accept=".csv,.xlsx,.xls,.xlsm" style="display:none" onchange="importStockFile(this.files[0])">
+    <button class="auth-btn" style="max-width:200px;font-size:.78rem;padding:7px 14px" onclick="document.getElementById('stock-file-inp-top').click()">
+      📂 Selectează Excel / CSV
+    </button>
+    <span style="font-size:.72rem;color:var(--muted)">sau trage fișierul pe pagină</span>
+  </div>
   <div class="main" id="stocuri-main">
     <div class="empty-state"><div class="ei">📦</div><div class="et">Încarcă un fișier de stocuri (CSV/Excel).</div></div>
   </div>
+</div>
 </div>
 
 <div id="view-utilizatori" class="view">
@@ -1100,17 +1109,12 @@ function setNestFilter(f){nestFilter=f;['all','l3030','bodor'].forEach(x=>docume
 function renderNesturi(){
   const container=document.getElementById('cards');container.innerHTML='';
 
-  // Storage bar HTML
-  const storageBar=`
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 12px;background:var(--surf);border:1px solid var(--border);border-radius:8px;font-size:.72rem">
-      <span style="color:var(--muted);white-space:nowrap">💾 Storage Supabase:</span>
-      <div style="flex:1;height:6px;background:var(--surf3);border-radius:3px;overflow:hidden">
-        <div id="storage-bar-fill" style="height:100%;width:0%;border-radius:3px;background:var(--ok);transition:width .5s"></div>
-      </div>
-      <span id="storage-bar-lbl" style="color:var(--muted);white-space:nowrap">—</span>
-    </div>`;
-
-  // Sort selector
+  // ── Toolbar: storage bar + sort (render once into dedicated div, avoid duplicates) ──
+  let toolbar=document.getElementById('nesturi-toolbar');
+  if(!toolbar){
+    toolbar=document.createElement('div');toolbar.id='nesturi-toolbar';
+    container.parentNode.insertBefore(toolbar,container);
+  }
   const sortOptions=[
     {v:'priority',l:'⭐ Prioritate'},
     {v:'newest',l:'🕐 Cele mai noi'},
@@ -1118,13 +1122,18 @@ function renderNesturi(){
     {v:'sheet',l:'📦 Tablă consumată'},
     {v:'machine',l:'🔧 Mașină'},
   ];
-  const sortBar=`<div class="filter-bar" style="margin-bottom:8px">
-    <span class="lbl">Ordonare:</span>
-    ${sortOptions.map(o=>`<button class="filt-btn ${nestSort===o.v?'active':''}" onclick="setNestSort('${o.v}')">${o.l}</button>`).join('')}
-  </div>`;
-
-  // Inject before cards
-  container.insertAdjacentHTML('beforebegin', storageBar + sortBar);
+  toolbar.innerHTML=`
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;padding:8px 12px;background:var(--surf);border:1px solid var(--border);border-radius:8px;font-size:.72rem">
+      <span style="color:var(--muted);white-space:nowrap">💾 Storage:</span>
+      <div style="flex:1;height:6px;background:var(--surf3);border-radius:3px;overflow:hidden">
+        <div id="storage-bar-fill" style="height:100%;width:0%;border-radius:3px;background:var(--ok);transition:width .5s"></div>
+      </div>
+      <span id="storage-bar-lbl" style="color:var(--dim);white-space:nowrap;font-size:.68rem">se calculează…</span>
+    </div>
+    <div class="filter-bar" style="margin-bottom:8px">
+      <span class="lbl">Ordonare:</span>
+      ${sortOptions.map(o=>`<button class="filt-btn ${nestSort===o.v?'active':''}" onclick="setNestSort('${o.v}')">${o.l}</button>`).join('')}
+    </div>`;
   updateStorageBar();
 
   // Filter + group by source
@@ -1192,24 +1201,26 @@ function formatTime(ts){return new Date(ts).toLocaleTimeString('ro-RO',{hour:'2-
 
 /* ══ RENDER CARD ══ */
 function renderCard(data,container){
+  if(!data||!data.programName) return; // guard: skip invalid programs
   const isL=data.type==='l3030';
   const prog=data.programName;
+  const parts=Array.isArray(data.parts)?data.parts:[];
   const rpt=isL?(data.rpt||'1'):(data.numOfSheet||0);
-  const hasImg=data.parts.some(x=>x.imageDataUrl||x.imageUrl);
+  const hasImg=parts.some(x=>x.imageDataUrl||x.imageUrl);
   const thumb=data.thumbnailUrl||data.thumbnail;
   const extraCells=isL
     ?`<div class="ic"><div class="lbl">Fișier sursă</div><div class="val mono" style="font-size:.71rem;color:var(--muted)">${data.source}</div></div>`
     :`<div class="ic"><div class="lbl">PlateNum</div><div class="val mono">${data.plateNum||'—'}</div></div><div class="ic"><div class="lbl">JobNum</div><div class="val mono">${data.jobNum||'—'}</div></div>`;
   let partsHTML='';
-  if(data.parts.length){
-    const rows=data.parts.map((x,i)=>{
+  if(parts.length){
+    const rows=parts.map((x,i)=>{
       const imgSrc=x.imageUrl||x.imageDataUrl;
       return `<tr><td class="row-num">${i+1}</td>
         ${hasImg?`<td class="img-cell">${imgSrc?`<img src="${imgSrc}" loading="lazy" alt="${x.alias}">`:'<span style="color:var(--dim);font-size:.71rem">—</span>'}</td>`:''}
         <td class="alias-cell">${x.alias}</td><td><span class="pcs-pill">${x.pcs}</span></td>
       </tr>`;
     }).join('');
-    partsHTML=`<div class="sec-hd">${data.parts.length} ${data.parts.length===1?'tip piesă':'tipuri piese'}</div>
+    partsHTML=`<div class="sec-hd">${data.parts.length} ${parts.length===1?'tip piesă':'tipuri piese'}</div>
     <div class="parts-wrap"><table class="pt"><thead><tr><th>#</th>${hasImg?'<th>Imagine</th>':''}<th>Alias</th><th>Buc.</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }
   const thumbHTML=thumb?`<div class="thumb-section"><div class="sec-hd" style="margin-top:11px">Preview</div><img src="${thumb}" loading="lazy"></div>`:'';
@@ -1513,7 +1524,7 @@ function toggleDetail(ok){const sid=safeId(ok);const row=document.getElementById
 
 function buildDetail(p){
   const ok=opKey(p);const sk=sheetKey(p.sheetMaterial);const d=opData[ok]||{};
-  const cod=pickingData[sk]?.sheetCode||'—';const totalBuc=p.parts.reduce((s,x)=>s+x.pcs,0);const isL=p.type==='l3030';
+  const cod=pickingData[sk]?.sheetCode||'—';const totalBuc=pparts.reduce((s,x)=>s+x.pcs,0);const isL=p.type==='l3030';
   const motiv=d.motivDepasire;const sch=schedNr(p.source);
   const metaItems=[
     {k:'Mașină',v:p.machine},{k:'Nest/Job',v:p.source},{k:'Schedule No.',v:sch||'—'},{k:'Program/Result',v:p.programName},
@@ -1524,9 +1535,10 @@ function buildDetail(p){
     ...(p.plateNum?[{k:'PlateNum',v:p.plateNum}]:[])
   ].map(m=>`<div class="dm"><div class="k">${m.k}</div><div class="v ${m.warn?'warn':''}">${esc(m.v)}</div></div>`).join('');
   let partsSection='';
-  if(p.parts.length){
-    const hasImg=p.parts.some(x=>x.imageDataUrl||x.imageUrl);
-    if(hasImg){partsSection=`<div class="sec-hd">Piese (${p.parts.length})</div><div class="parts-grid">${p.parts.map(x=>{const imgSrc=x.imageUrl||x.imageDataUrl;return `<div class="part-thumb ${imgSrc?'':'no-img'}">${imgSrc?`<img src="${imgSrc}" loading="lazy">`:'<div class="no-img-ico">✂</div>'}<div class="pa">${esc(x.alias)}</div><div class="pp">${x.pcs} buc.</div></div>`;}).join('')}</div>`;}
+  if(pparts.length){
+    const pparts=Array.isArray(p.parts)?p.parts:[];
+  const hasImg=pparts.some(x=>x.imageDataUrl||x.imageUrl);
+    if(hasImg){partsSection=`<div class="sec-hd">Piese (${pparts.length})</div><div class="parts-grid">${pparts.map(x=>{const imgSrc=x.imageUrl||x.imageDataUrl;return `<div class="part-thumb ${imgSrc?'':'no-img'}">${imgSrc?`<img src="${imgSrc}" loading="lazy">`:'<div class="no-img-ico">✂</div>'}<div class="pa">${esc(x.alias)}</div><div class="pp">${x.pcs} buc.</div></div>`;}).join('')}</div>`;}
     else{const rows=p.parts.map((x,i)=>`<tr><td style="color:var(--dim);font-size:.69rem;padding:4px 9px">${i+1}</td><td style="font-family:var(--mono);font-size:.74rem;padding:4px 9px">${esc(x.alias)}</td><td style="padding:4px 9px"><span class="pcs-pill">${x.pcs}</span></td></tr>`).join('');partsSection=`<div class="sec-hd">Piese (${p.parts.length})</div><div class="parts-wrap"><table class="pt"><thead><tr><th>#</th><th>Alias</th><th>Buc.</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
   }
   const thumbSrc=p.thumbnailUrl||p.thumbnail;
