@@ -497,7 +497,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
     <div class="user-info-bar" id="user-info-bar" style="display:none">
     <div class="user-avatar" id="user-avatar">?</div>
     <span id="user-role-badge"></span>
-    <button class="logout-btn" onclick="authLogout()">Sair</button>
+    <button class="logout-btn" onclick="authLogout()">Ieșire</button>
   </div>
 </div>
 </header>
@@ -559,7 +559,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
 </div>
 
 <!-- ════ SIDEBAR DROPZONE (dreapta, 10% lățime, înălțime viewport) ════ -->
-<div id="dropzone-side">
+<div id="dropzone-side" style="display:none">
   <input type="file" id="fileInput" multiple accept=".html,.htm,.pdf,.xlsx,.xls,.xlsm,.csv" style="display:none">
   <div class="dz-icon-big" id="dzIcon">📂</div>
   <div class="dz-lbl" id="dzLabel">Trage<br>fișiere<br>aici</div>
@@ -644,12 +644,15 @@ function isCompleted(p){const d=opData[opKey(p)];const deb=parseInt(d?.coliDebit
 function switchTab(tab){
   activeTab=tab;
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
-  document.getElementById('t-'+tab).classList.add('active');
+  document.getElementById('t-'+tab)?.classList.add('active');
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
-  document.getElementById('view-'+tab).classList.add('active');
-  if(tab==='picking') renderPicking();
-  if(tab==='raportare') renderRaportare();
+  document.getElementById('view-'+tab)?.classList.add('active');
+  updateTabCounts();
+  // Dropzone vizibil DOAR în Nesturi
+  const dz=document.getElementById('dropzone-side');
+  if(dz) dz.style.display=(tab==='nesturi')?'flex':'none';
 }
+
 function updateTabCounts(){
   const srcCount=new Set(allPrograms.map(p=>p.source)).size;
   document.getElementById('tc-nesturi').textContent=srcCount;
@@ -1806,7 +1809,9 @@ function setupAppUI(){
   const name=currentProfile?.display_name||currentProfile?.email||'User';
   const initials=name.split(' ').map(w=>w[0]||'').join('').slice(0,2).toUpperCase()||'?';
   document.getElementById('user-avatar').textContent=initials;
-  document.getElementById('user-role-badge').innerHTML=roleBadge(currentProfile?.role||'operator');
+  // Afișează NUMELE utilizatorului + rolul ca badge mic
+  const roleEl=document.getElementById('user-role-badge');
+  if(roleEl) roleEl.innerHTML=`<span style="font-size:.8rem;font-weight:600;color:var(--text);margin-right:6px">${esc(name)}</span>`+roleBadge(currentProfile?.role||'operator');
 
   // Tab-uri bazate pe rol
   document.getElementById('t-stocuri').style.display='block'; // toți utilizatorii
@@ -1830,7 +1835,8 @@ function setupAppUI(){
 function updateDropzoneVisibility(){
   const dz=document.getElementById('dropzone-side');
   if(!dz) return;
-  dz.style.display=(activeTab==='nesturi'&&canImportNests())?'flex':'none';
+  const show=activeTab==='nesturi'&&typeof canImportNests==='function'&&canImportNests();
+  dz.style.display=show?'flex':'none';
 }
 
 function setupOfflineMode(){
@@ -1854,6 +1860,9 @@ const _origSwitchTab=switchTab;
 switchTab=function(tab){
   _origSwitchTab(tab);
   updateDropzoneVisibility();
+  if(tab==='nesturi') renderNesturi();
+  if(tab==='picking') renderPicking();
+  if(tab==='raportare') renderRaportare();
   if(tab==='stocuri') renderStocuri();
   if(tab==='utilizatori') renderUtilizatori();
 };
@@ -1888,9 +1897,10 @@ async function loadAllData(){
 
   restoreImagesFromCache();
   refreshStats();updateTabCounts();
+  // Renderăm întotdeauna tab-ul activ + Nesturi (pentru că e default)
   renderNesturi();
-  if(activeTab==='picking') renderPicking();
-  if(activeTab==='raportare') renderRaportare();
+  renderPicking();   // actualizăm și picking (contoarele)
+  renderRaportare(); // și raportarea
   if(activeTab==='stocuri') renderStocuri();
 }
 
@@ -2397,6 +2407,13 @@ async function initApp(){
   // auth-screen rămâne vizibil, setează listener
   setupAuthListener();
 }
+
+// Global stock import trigger
+document.addEventListener('DOMContentLoaded',()=>{
+  // Ensure stock upload button always works
+  const btn=document.getElementById('stock-file-inp-top');
+  if(btn) btn.addEventListener('change',function(){if(this.files[0]) importStockFile(this.files[0]);});
+});
 
 document.addEventListener('keydown',e=>{
   if(e.key==='Enter'&&document.getElementById('auth-screen')?.style.display!=='none'){
