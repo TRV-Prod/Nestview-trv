@@ -608,7 +608,7 @@ function initSupabase(){
 
 <!-- ════ SIDEBAR DROPZONE (dreapta, 10% lățime, înălțime viewport) ════ -->
 <div id="dropzone-side">
-  <input type="file" id="fileInput" multiple accept=".html,.htm,.pdf" style="display:none">
+  <input type="file" id="fileInput" multiple accept=".html,.htm,.pdf,.xlsx,.xls,.xlsm,.csv" style="display:none">
   <div class="dz-icon-big" id="dzIcon">📂</div>
   <div class="dz-lbl" id="dzLabel">Trage<br>fișiere<br>aici</div>
   <div class="dz-pills">
@@ -718,7 +718,65 @@ dz.addEventListener('dragover',e=>{e.preventDefault();e.stopPropagation();dz.cla
 dz.addEventListener('dragleave',e=>{if(!dz.contains(e.relatedTarget)) dz.classList.remove('drag-over');});
 dz.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();dz.classList.remove('drag-over');document.body.classList.remove('drag-active');processFiles(e.dataTransfer.files);});
 fi.addEventListener('change',e=>{processFiles(e.target.files);e.target.value='';});
-async function processFiles(files){for(const f of Array.from(files)){const ext=f.name.split('.').pop().toLowerCase();if(ext==='html'||ext==='htm') await handleHTML(f);else if(ext==='pdf') await handlePDF(f);}}
+
+/* ══ IMAGE CACHE (localStorage) ══
+   Imaginile sunt stocate local per device.
+   La reload din Supabase, sunt restaurate din cache.
+   ════════════════════════════════ */
+function _imgCacheKey(source){
+  return 'nv_img_'+source.replace(/[^a-zA-Z0-9._-]/g,'_').slice(0,60);
+}
+
+function saveImagesToCache(source, programs){
+  try{
+    const key=_imgCacheKey(source);
+    const cache={};
+    programs.forEach(prog=>{
+      if(prog.thumbnail) cache['__thumb__']=prog.thumbnail;
+      (prog.parts||[]).forEach(p=>{if(p.imageDataUrl) cache[p.alias]=p.imageDataUrl;});
+    });
+    if(Object.keys(cache).length) localStorage.setItem(key,JSON.stringify(cache));
+  }catch(e){console.warn('Image cache save:',e.message);}
+}
+
+function restoreImagesFromCache(){
+  const sources=[...new Set(allPrograms.map(p=>p.source))];
+  let restored=0;
+  sources.forEach(source=>{
+    try{
+      const raw=localStorage.getItem(_imgCacheKey(source));
+      if(!raw) return;
+      const cache=JSON.parse(raw);
+      allPrograms.filter(p=>p.source===source).forEach(prog=>{
+        if(!prog.thumbnail&&cache['__thumb__']){prog.thumbnail=cache['__thumb__'];restored++;}
+        (prog.parts||[]).forEach(part=>{
+          if(!part.imageDataUrl&&cache[part.alias]){part.imageDataUrl=cache[part.alias];restored++;}
+        });
+      });
+    }catch(e){/* ignore corrupted cache */}
+  });
+  if(restored>0){
+    console.log('[NestViewer] Restaurate',restored,'imagini din cache local');
+    renderNesturi(); // re-render cu imaginile restaurate
+    if(activeTab==='raportare') renderRaportare();
+  }
+}
+
+function deleteImageCache(source){
+  try{localStorage.removeItem(_imgCacheKey(source));}catch(e){}
+}
+
+async function processFiles(files){
+  for(const f of Array.from(files)){
+    const ext=f.name.split('.').pop().toLowerCase();
+    if(ext==='html'||ext==='htm') await handleHTML(f);
+    else if(ext==='pdf') await handlePDF(f);
+    else if(['xlsx','xls','xlsm','csv'].includes(ext)){
+      switchTab('stocuri');
+      await importStockFile(f);
+    }
+  }
+}
 
 function onLoaded(programs){
   allPrograms.push(...programs);
@@ -1650,6 +1708,9 @@ async function loadAllData(){
     }
 
     refreshStats();updateTabCounts();
+    // Restaurează imaginile din cache local (stocate la import, înainte de strip pentru DB)
+    restoreImagesFromCache();
+    restoreImagesFromCache();
     renderNesturi();
     if(activeTab==='picking') renderPicking();
     if(activeTab==='raportare') renderRaportare();
@@ -1677,6 +1738,8 @@ function setupRealtime(){
 // ── Save to Supabase ──
 async function saveNestToSupabase(source,programs){
   if(!sb||!currentUser) return;
+  // Salvează imaginile în cache LOCAL înainte de a le șterge pentru DB
+  saveImagesToCache(source, programs);
   const progsCleaned=programs.map(p=>({...p,parts:(p.parts||[]).map(x=>({...x,imageDataUrl:null})),thumbnail:null}));
   const first=programs[0];
   const payload={source,machine:first?.machine||'',job_name:first?.nestName||source,
@@ -2144,6 +2207,7 @@ deleteNest=function(src){
   refreshStats();updateTabCounts();
   renderNesturi();if(activeTab==='picking') renderPicking();if(activeTab==='raportare') renderRaportare();
   deleteNestFromSupabase(src);
+  deleteImageCache(src); // șterge și cache-ul local de imagini
 };
 
 
