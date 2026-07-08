@@ -497,6 +497,10 @@ table.stat-log tr:last-child td{border-bottom:none;}
     <div class="user-info-bar" id="user-info-bar" style="display:none">
     <div class="user-avatar" id="user-avatar">?</div>
     <span id="user-role-badge"></span>
+    <span id="last-sync-lbl" style="font-size:.65rem;color:var(--dim);white-space:nowrap">—</span>
+    <button id="btn-refresh" onclick="manualRefresh()" title="Sincronizează cu serverul"
+      style="background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:4px 10px;color:var(--muted);cursor:pointer;font-size:.75rem;transition:all .15s"
+      onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--muted)'">⟳ Refresh</button>
     <button class="logout-btn" onclick="authLogout()">Ieșire</button>
   </div>
 </div>
@@ -1154,6 +1158,10 @@ function renderNesturi(){
     container.innerHTML='<div class="empty-state"><div class="ei">🔍</div><div class="et">Niciun nest pentru filtrul selectat.</div></div>';return;
   }
   sorted.forEach(p=>renderCard(p,container));
+  // Actualizează contorul cu numărul de carduri efectiv redate
+  const actualCards=container.querySelectorAll('.card').length;
+  const srcBadge=document.getElementById('tc-nesturi');
+  if(srcBadge) srcBadge.textContent=new Set(sorted.map(p=>p.source)).size;
 }
 
 function setNestSort(v){nestSort=v;renderNesturi();}
@@ -1267,6 +1275,7 @@ function setNestFilter(f){
   renderNesturi();
 }
 function setPickFilter(f){pickFilter=f;document.querySelectorAll('.pk-filt').forEach(b=>b.classList.toggle('active',b.dataset.f===f));renderPicking();}
+
 
 /* ══ PICKING ══ */
 function renderPicking(){
@@ -1888,6 +1897,20 @@ function updateDropzoneVisibility(){
   dz.style.display=show?'flex':'none';
 }
 
+async function manualRefresh(){
+  const btn=document.getElementById('btn-refresh');
+  if(btn){btn.textContent='⟳ Se sincronizează...';btn.disabled=true;}
+  try{
+    await loadAllData();
+    showToast('✓ Date sincronizate cu serverul');
+  }catch(e){
+    showToast('⚠ Eroare sincronizare: '+e.message,'err');
+    console.error('[NV] manualRefresh:',e);
+  }finally{
+    if(btn){btn.textContent='⟳ Refresh';btn.disabled=false;}
+  }
+}
+
 function setupOfflineMode(){
   document.getElementById('auth-screen').style.display='none';
   document.getElementById('user-info-bar').style.display='flex';
@@ -1920,15 +1943,23 @@ switchTab=function(tab){
 async function loadAllData(){
   if(!sb) return;
   // Nests
-  const{data:nests}=await sb.from('nests').select('*').order('priority',{ascending:true}).order('imported_at');
+  const{data:nests,error:nestsErr}=await sb.from('nests').select('*').order('priority',{ascending:true}).order('imported_at');
+  if(nestsErr) console.warn('[NV] loadNests error:',nestsErr.message);
   if(nests){
-    allPrograms.length=0;
+    const newProgs=[];
     nests.forEach(n=>{
       const progs=(n.programs||[]).map(p=>({...p,source:n.source,_sbId:n.id,_importedAt:n.imported_at?new Date(n.imported_at).getTime():Date.now()}));
-      allPrograms.push(...progs);
+      newProgs.push(...progs);
       ensureSchedule(n.source);
       scheduleData[n.source]={schedNo:n.schedule_no||'',priority:n.priority||0};
     });
+    // Actualizează doar dacă avem programe SAU nu există nesturi în DB
+    if(newProgs.length>0||nests.length===0){
+      allPrograms.length=0;
+      allPrograms.push(...newProgs);
+    } else {
+      console.warn('[NV] Nesturi în DB dar programs goale — păstrăm datele locale');
+    }
   }
   // Picking
   const{data:pd}=await sb.from('picking_data').select('*');
@@ -1946,11 +1977,15 @@ async function loadAllData(){
 
   restoreImagesFromCache();
   refreshStats();updateTabCounts();
-  // Renderăm întotdeauna tab-ul activ + Nesturi (pentru că e default)
   renderNesturi();
-  renderPicking();   // actualizăm și picking (contoarele)
-  renderRaportare(); // și raportarea
+  renderPicking();
+  renderRaportare();
   if(activeTab==='stocuri') renderStocuri();
+  // Actualizează timestamp ultima sincronizare
+  const now=new Date();
+  const syncStr=now.toLocaleDateString('ro-RO')+' '+now.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const syncEl=document.getElementById('last-sync-lbl');
+  if(syncEl) syncEl.textContent='Sync: '+syncStr;
 }
 
 async function initDefaultLocations(){
@@ -2010,9 +2045,20 @@ async function saveNestToSupabase(source,programs){
   const first=programs[0];
   const payload={source,machine:first?.machine||'',job_name:first?.nestName||source,
     schedule_no:getSchedNo(source),priority:getPriority(source),
-    programs:progsCleaned,imported_by:currentUser.id};
-  const{error}=await sb.from('nests').upsert(payload,{onConflict:'source'});
-  if(error) console.warn('saveNest error:',error.message);
+    programs:progsCleaned,imported_by:currentUser.id,
+    imported_at:new Date().toISOString()};
+
+  // Caută nest existent după source (evită probleme cu upsert/unique constraint)
+  const{data:existing,error:findErr}=await sb.from('nests').select('id').eq('source',source).maybeSingle();
+  if(findErr) console.warn('saveNest find error:',findErr.message);
+
+  if(existing?.id){
+    const{error}=await sb.from('nests').update(payload).eq('id',existing.id);
+    if(error) console.warn('saveNest update error:',error.message);
+  } else {
+    const{error}=await sb.from('nests').insert(payload);
+    if(error) console.warn('saveNest insert error:',error.message);
+  }
 }
 
 async function savePickingToSupabase(key){
@@ -2136,113 +2182,101 @@ async function removeStockLocation(code){
 
 /* ── STOCK IMPORT ── */
 async function importStockFile(file){
-  if(!file) return;
+  if(!file){console.warn('importStockFile: no file');return;}
+  console.log('[NV] Importing stock file:', file.name, file.size, 'bytes');
+
+  showToast('Se procesează '+file.name+'...','ok',10000);
   const ext=file.name.split('.').pop().toLowerCase();
   let rows=[],headers=[];
-  if(['xlsx','xls','xlsm'].includes(ext)){
-    if(typeof XLSX==='undefined'){
-      try{await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s);});}
-      catch(e){alert('Nu s-a putut încărca biblioteca Excel.');return;}
+
+  try{
+    if(['xlsx','xls','xlsm'].includes(ext)){
+      // Încearcă să încarce SheetJS dinamic dacă nu e disponibil
+      if(typeof XLSX==='undefined'){
+        await new Promise((res,rej)=>{
+          const s=document.createElement('script');
+          s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+          s.onload=res;s.onerror=()=>rej(new Error('SheetJS CDN unavailable'));
+          document.head.appendChild(s);
+        });
+      }
+      const ab=await file.arrayBuffer();
+      const wb=XLSX.read(ab,{type:'array'});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+      if(!data.length){showToast('Fișier Excel gol','err');return;}
+      headers=data[0].map(h=>String(h||'').trim());
+      for(let i=1;i<data.length;i++){
+        if(!data[i].some(v=>String(v).trim()!=='')) continue;
+        const row={};headers.forEach((h,j)=>row[h]=String(data[i][j]??'').trim());
+        rows.push(row);
+      }
+    } else {
+      const text=await file.text();
+      const lines=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').filter(l=>l.trim());
+      if(!lines.length){showToast('Fișier CSV gol','err');return;}
+      const delim=lines[0].includes(';')?';':',';
+      headers=lines[0].split(delim).map(h=>h.trim().replace(/^"|"$/g,''));
+      for(let i=1;i<lines.length;i++){
+        const vals=lines[i].split(delim).map(v=>v.trim().replace(/^"|"$/g,''));
+        if(!vals.some(v=>v)) continue;
+        const row={};headers.forEach((h,j)=>row[h]=vals[j]||'');
+        rows.push(row);
+      }
     }
-    const ab=await file.arrayBuffer();
-    const wb=XLSX.read(ab,{type:'array'});
-    const ws=wb.Sheets[wb.SheetNames[0]];
-    const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-    if(!data.length) return;
-    headers=data[0].map(h=>String(h||'').trim());
-    for(let i=1;i<data.length;i++){
-      if(!data[i].some(v=>v!=='')) continue;
-      const row={};headers.forEach((h,j)=>row[h]=String(data[i][j]??'').trim());
-      rows.push(row);
-    }
-  } else {
-    const text=await file.text();
-    const lines=text.split('\n').filter(l=>l.trim());
-    if(!lines.length) return;
-    const delim=lines[0].includes(';')?';':',';
-    headers=lines[0].split(delim).map(h=>h.trim().replace(/^"|"$/g,''));
-    for(let i=1;i<lines.length;i++){
-      const vals=lines[i].split(delim).map(v=>v.trim().replace(/^"|"$/g,''));
-      if(!vals.some(v=>v)) continue;
-      const row={};headers.forEach((h,j)=>row[h]=vals[j]||'');
-      rows.push(row);
-    }
+  }catch(e){
+    showToast('Eroare citire fișier: '+e.message,'err',6000);
+    console.error('[NV] importStockFile read error:',e);
+    return;
   }
+
+  console.log('[NV] Stock file parsed:',rows.length,'rows,',headers.length,'columns');
+  if(!rows.length){showToast('Niciun rând de date găsit în fișier','err');return;}
+
   const locIdx=headers.findIndex(h=>h.toUpperCase()==='LOCATION');
-  if(locIdx<0){alert('Coloana LOCATION nu a fost găsită! Coloane: '+headers.join(', '));return;}
-  const activeCodes=new Set(stockLocations.filter(l=>l.active).map(l=>l.code.toUpperCase()));
-  const filtered=rows.filter(r=>activeCodes.has(String(r['LOCATION']||'').trim().toUpperCase()));
-  stockRecords=filtered.map(r=>({data:r}));stockHeaders=headers;
-  if(sb&&currentUser&&filtered.length){
-    await sb.from('stock_records').delete().not('id','is',null).catch(()=>{});
-    const batchId=crypto.randomUUID();
-    for(let i=0;i<filtered.length;i+=500){
-      const inserts=filtered.slice(i,i+500).map(r=>({location:r['LOCATION']||'',data:r,batch_id:batchId,imported_by:currentUser.id}));
-      await sb.from('stock_records').insert(inserts);
+  if(locIdx<0){
+    showToast('Coloana LOCATION nu a fost găsită! Coloane: '+headers.slice(0,5).join(', ')+'...','err',8000);
+    return;
+  }
+
+  const activeCodes=new Set((stockLocations||[]).filter(l=>l.active).map(l=>l.code.toUpperCase()));
+  console.log('[NV] Active location codes:', [...activeCodes]);
+
+  const filtered=activeCodes.size>0
+    ? rows.filter(r=>activeCodes.has(String(r['LOCATION']||'').trim().toUpperCase()))
+    : rows; // dacă nu sunt locații configurate, arată toate
+
+  console.log('[NV] Filtered rows:', filtered.length);
+
+  stockRecords=filtered.map(r=>({data:r}));
+  stockHeaders=headers;
+  stockImportTime=new Date();
+
+  // Render imediat — nu aștepta Supabase
+  if(activeTab==='stocuri') renderStocuri();
+  else switchTab('stocuri');
+
+  showToast('✓ '+filtered.length+' înregistrări importate din '+file.name);
+
+  // Salvare în Supabase (background, non-blocking)
+  if(sb&&currentUser&&filtered.length>0){
+    try{
+      await sb.from('stock_records').delete().not('id','is',null).catch(()=>{});
+      const batchId=crypto.randomUUID();
+      for(let i=0;i<filtered.length;i+=500){
+        const inserts=filtered.slice(i,i+500).map(r=>({
+          location:r['LOCATION']||'',data:r,batch_id:batchId,imported_by:currentUser.id
+        }));
+        const{error}=await sb.from('stock_records').insert(inserts);
+        if(error) console.warn('[NV] stock_records insert error:',error.message);
+      }
+      showToast('✓ Stocuri salvate în Supabase ('+filtered.length+' înregistrări)');
+    }catch(e){
+      console.warn('[NV] stock save error:',e.message);
     }
   }
-  renderStocuri();
-  showToast(filtered.length+' înregistrări importate din '+file.name);
 }
 
-/* ── RENDER STOCURI ── */
-function stockSortBy(col){
-  if(stockSort.col===col) stockSort.asc=!stockSort.asc;
-  else{stockSort.col=col;stockSort.asc=true;}
-  renderStocuri();
-}
-function stockFilterChange(col,val){
-  if(val) stockFilters[col]=val.toLowerCase();
-  else delete stockFilters[col];
-  renderStocuri();
-}
-function setStockFontSize(v){stockFontSize=parseInt(v)||13;renderStocuri();}
-
-function printLabel(row){
-  const cfg=labelConfig;
-  const vals=cfg.fields.map(f=>({k:f,v:String(row[f]||'')}));
-  const qrText=vals.map(x=>x.v).filter(Boolean).join('|');
-  const win=window.open('','_blank','width=420,height=380,toolbar=0,menubar=0');
-  if(!win) return;
-  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
-    <title>Etichetă</title>
-    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"><\/script>
-    <style>
-      *{box-sizing:border-box;font-family:Arial,sans-serif;margin:0;padding:0}
-      body{padding:12px;background:#fff}
-      .label{border:2px solid #000;padding:10px;width:280px;margin:0 auto;background:#fff}
-      .qr-wrap{text-align:center;margin:6px 0}
-      .fields{margin-top:6px;border-top:1px solid #ccc;padding-top:6px}
-      .field{display:flex;gap:4px;font-size:10px;margin:2px 0;line-height:1.3}
-      .fk{font-weight:700;min-width:70px;color:#444}
-      .fv{font-weight:400;word-break:break-all}
-      @media print{body{padding:0}.no-print{display:none}}
-    </style></head><body>
-    <div class="no-print" style="margin-bottom:8px;text-align:center">
-      <button onclick="window.print()" style="padding:6px 16px;font-size:13px;cursor:pointer">🖨 Printează</button>
-      <button onclick="window.close()" style="padding:6px 12px;font-size:13px;cursor:pointer;margin-left:6px">✕</button>
-    </div>
-    <div class="label">
-      <div class="qr-wrap" id="qrc"></div>
-      <div class="fields">${vals.map(x=>`<div class="field"><span class="fk">${x.k}:</span><span class="fv">${x.v||'—'}</span></div>`).join('')}</div>
-    </div>
-    <script>
-      try{new QRCode(document.getElementById('qrc'),{text:${JSON.stringify(qrText)},width:120,height:120,correctLevel:QRCode.CorrectLevel.M});}
-      catch(e){document.getElementById('qrc').innerHTML='<div style="font-size:9px;color:red">QR error: '+e.message+'</div>';}
-    <\/script>`);
-  win.document.close();
-}
-
-function showLabelConfig(){
-  if(!canManageUsers()){alert('Doar Developer/Admin pot modifica configurația etichetei.');return;}
-  const allCols=stockHeaders.length?stockHeaders:['ITEM NR','LOTNR','ITEM NAME'];
-  const current=labelConfig.fields.join(', ');
-  const newFields=prompt('Câmpuri pe etichetă (separate cu virgulă):\nDisponibile: '+allCols.join(', '),current);
-  if(newFields===null) return;
-  labelConfig.fields=newFields.split(',').map(s=>s.trim()).filter(Boolean);
-  alert('Configurare salvată! Câmpuri: '+labelConfig.fields.join(', '));
-  renderStocuri();
-}
 
 function renderStocuri(){
   const el=document.getElementById('stocuri-main');
@@ -2322,7 +2356,9 @@ function renderStocuri(){
     </div>
     ${stockRecords.length?`
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-        <span style="font-size:.78rem;font-weight:600">${rows.length} / ${stockRecords.length} înregistrări</span>${locSummary}
+        <span style="font-size:.78rem;font-weight:600">${rows.length} / ${stockRecords.length} înregistrări</span>
+        ${stockImportTime?`<span style="font-size:.68rem;color:var(--dim)">importat la ${stockImportTime.toLocaleString('ro-RO')}</span>`:''}
+        ${locSummary}
         <span style="margin-left:auto;display:flex;align-items:center;gap:6px;font-size:.72rem;color:var(--muted)">
           Mărime text:
           <input type="range" min="9" max="20" value="${stockFontSize}" style="width:80px" oninput="setStockFontSize(this.value)">
