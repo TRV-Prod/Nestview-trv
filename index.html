@@ -1321,7 +1321,7 @@ function renderPicking(){
   if(!allPrograms.length){el.innerHTML='<div class="empty-state"><div class="ei">📋</div><div class="et">Încarcă fișiere de nesting.</div></div>';return;}
   const keys=uniqueSheetKeys();
   const pkRows=keys.map(key=>{
-    const d=pickingData[key];const need=sheetNeed(key);
+    ensurePick(key);const d=pickingData[key];const need=sheetNeed(key);
     const progs=allPrograms.filter(p=>sheetKey(p.sheetMaterial)===key);
     const machines=[...new Set(progs.map(p=>p.machine))].join(', ');
     const schedules=[...new Set(progs.map(p=>schedNr(p.source)).filter(Boolean))].join(', ');
@@ -1341,7 +1341,7 @@ function renderPicking(){
   const nestGroups={};
   for(const p of fp){const sk=sheetKey(p.sheetMaterial);const gk=`${p.source}|||${sk}`;if(!nestGroups[gk]) nestGroups[gk]={type:p.type,machine:p.machine,source:p.source,sk,sheetMaterial:p.sheetMaterial,totalColi:0};nestGroups[gk].totalColi+=effectiveNec(p);}
   const isNestRez=gk=>{const g=nestGroups[gk];if(!g) return false;const d=pickingData[g.sk];const r=parseInt(d?.reservedQty)||0;return r>0&&r>=sheetNeed(g.sk);};
-  function nestRow(g,gk){const d=pickingData[g.sk]||{};const sch=schedNr(g.source);
+  function nestRow(g,gk){if(g.sk) ensurePick(g.sk);const d=pickingData[g.sk]||{sheetCode:'',reservedQty:'',reservedAt:null,surplusMotiv:''};const sch=schedNr(g.source);
     return `<tr><td><span class="mbadge ${g.type==='l3030'?'mb-l':'mb-b'}" style="font-size:.6rem">${g.type==='l3030'?'⚡':'🔵'}</span></td>
       <td style="font-family:var(--mono);font-size:.78rem;font-weight:600">${esc(g.source)}</td>
       <td style="font-family:var(--mono);font-size:.76rem">${displaySheet(g.sheetMaterial)}</td>
@@ -1909,7 +1909,8 @@ async function onLoginSuccess(user){
 
   showToast('Se încarcă datele...','ok',10000);
   try{
-    await ensureStorageBucket();
+    // ensureStorageBucket dezactivat — rulează SQL-ul din supabase_setup.sql pentru Storage
+    // await ensureStorageBucket();
     await loadAllData();
     refreshStorageUsage(); // async, non-blocking
     showToast('✓ Bine ai revenit, '+currentProfile.display_name+'!');
