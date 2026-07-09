@@ -594,6 +594,22 @@ let rapSearch='',rapMachine='Toate',rapFormat='Toate';
 let rapSort={col:'prio',asc:true};
 const scheduleData={};
 const expandedRows=new Set();
+
+// ── Variabile Nesturi / Sort ──
+let nestSort='priority';        // priority|newest|oldest|sheet|machine
+
+// ── Variabile Stocuri ──
+let stockRecords=[];
+let stockHeaders=[];
+let stockLocations=[];
+let stockSort={col:null,asc:true};
+let stockFontSize=13;
+let stockImportTime=null;
+let labelConfig={fields:['ITEM NR','LOTNR','ITEM NAME'],barcodeType:'qr'};
+
+// ── Variabile Storage Supabase ──
+let storageUsedBytes=0;
+const STORAGE_LIMIT=1073741824; // 1 GB
 let ocPending=null;     // {ok,value,nec,sid,prevValue,el}
 
 /* ══ Stationare state ══ */
@@ -696,15 +712,20 @@ function sanitizePath(s){return s.replace(/[^a-zA-Z0-9._-]/g,'_').slice(0,80);}
 async function ensureStorageBucket(){
   if(!sb) return false;
   try{
-    const{error}=await sb.storage.getBucket('nest-images');
-    if(error&&error.message.includes('not found')){
-      await sb.storage.createBucket('nest-images',{public:true});
+    const{data,error}=await sb.storage.getBucket('nest-images');
+    if(data) return true; // bucket exists
+    // Try to create it
+    const{error:createErr}=await sb.storage.createBucket('nest-images',{public:true,fileSizeLimit:'50mb'});
+    if(createErr){
+      console.warn('Bucket create error:',createErr.message,'— imagini dezactivate');
+      return false;
     }
     return true;
-  }catch(e){console.warn('Bucket check:',e.message);return false;}
+  }catch(e){console.warn('Bucket error:',e.message);return false;}
 }
 
 async function uploadImageToStorage(source, alias, dataUrl){
+  // Dacă bucket-ul nu există, nu facem nimic (nu e critic)
   if(!sb||!dataUrl||!currentUser) return null;
   if(storageUsedBytes>=STORAGE_LIMIT){
     console.warn('Storage 100% — upload oprit');return null;
@@ -884,6 +905,9 @@ function onLoaded(programs){
   // Adaugă surse noi în coada de prompt-uri Schedule No.
   const newSrc=[...new Set(programs.map(p=>p.source))].filter(s=>!schedQueue.includes(s));
   schedQueue.push(...newSrc);
+  // Pre-render imediat după import (fără să aștepte promptul Schedule No.)
+  if(typeof renderNesturi==='function') renderNesturi();
+  updateTabCounts();
   if(schedQueue.length===newSrc.length) showNextSchedPrompt();
 }
 function doPostLoadRender(){
@@ -1154,8 +1178,17 @@ function renderNesturi(){
   const base=nestFilter==='all'?[...allPrograms]:[...allPrograms.filter(p=>p.type===nestFilter)];
   const sorted=sortNests(base);
 
-  if(!sorted.length&&allPrograms.length){
-    container.innerHTML='<div class="empty-state"><div class="ei">🔍</div><div class="et">Niciun nest pentru filtrul selectat.</div></div>';return;
+  // Debug: arată ce e în allPrograms
+  console.log('[NV] renderNesturi: allPrograms=',allPrograms.length,'sorted=',sorted.length,
+    'sample=',allPrograms[0]?JSON.stringify({src:allPrograms[0].source,prog:allPrograms[0].programName,type:allPrograms[0].type}):'EMPTY');
+
+  if(!sorted.length){
+    if(allPrograms.length){
+      container.innerHTML='<div class="empty-state"><div class="ei">🔍</div><div class="et">Niciun nest pentru filtrul selectat.</div></div>';
+    } else {
+      container.innerHTML='<div class="empty-state"><div class="ei">📂</div><div class="et">Trage fișiere HTML/PDF sau apasă Selectează.</div></div>';
+    }
+    return;
   }
   sorted.forEach(p=>renderCard(p,container));
   // Actualizează contorul cu numărul de carduri efectiv redate
@@ -1169,7 +1202,7 @@ function setNestSort(v){nestSort=v;renderNesturi();}
 function sortNests(programs){
   // Group by source
   const bySource={};
-  programs.forEach(p=>{if(!bySource[p.source]) bySource[p.source]=[];bySource[p.source].push(p);});
+  programs.forEach(p=>{const k=p.source||p.programName||'unknown';if(!bySource[k]) bySource[k]=[];bySource[k].push(p);});
   let sources=Object.keys(bySource);
 
   if(nestSort==='priority'){
@@ -1219,9 +1252,12 @@ function formatTime(ts){return new Date(ts).toLocaleTimeString('ro-RO',{hour:'2-
 
 /* ══ RENDER CARD ══ */
 function renderCard(data,container){
-  if(!data||typeof data!=='object') return;
+  if(!data||typeof data!=='object'){console.warn('[NV] renderCard: invalid data',data);return;}
+  // Log primele 3 carduri pentru debugging
+  if((container?.children?.length||0)<3){
+    console.log('[NV] renderCard:',{programName:data.programName,type:data.type,source:data.source,hasParts:Array.isArray(data.parts)});
+  }
   const isL=data.type==='l3030';
-  // Fallback complet — niciun program nu e sărit indiferent de câmpuri lipsă
   const prog=data.programName||data.result||data.job_name||data.source||'Program';
   const parts=Array.isArray(data.parts)?data.parts:[];
   const rpt=isL?(data.rpt||'1'):(data.numOfSheet||0);
@@ -1949,17 +1985,44 @@ async function loadAllData(){
   if(nests){
     const newProgs=[];
     nests.forEach(n=>{
-      const progs=(n.programs||[]).map(p=>({...p,source:n.source,_sbId:n.id,_importedAt:n.imported_at?new Date(n.imported_at).getTime():Date.now()}));
+      const progs=(n.programs||[]).map(p=>{
+        // Normalizare câmpuri — asigură compatibilitate cu orice versiune salvată
+        const normalized={
+          ...p,
+          source:n.source,
+          _sbId:n.id,
+          _importedAt:n.imported_at?new Date(n.imported_at).getTime():Date.now(),
+          // Fallback pentru câmpuri critice
+          type:p.type||(p.machine&&p.machine.toLowerCase().includes('bodor')?'bodor':'l3030'),
+          machine:p.machine||n.machine||'',
+          programName:p.programName||p.result||p.program_name||n.job_name||n.source,
+          sheetMaterial:p.sheetMaterial||p.sheet_material||'',
+          numOfSheet:p.numOfSheet||p.num_of_sheet||p.rpt||0,
+          parts:Array.isArray(p.parts)?p.parts:[]
+        };
+        return normalized;
+      });
       newProgs.push(...progs);
       ensureSchedule(n.source);
       scheduleData[n.source]={schedNo:n.schedule_no||'',priority:n.priority||0};
     });
-    // Actualizează doar dacă avem programe SAU nu există nesturi în DB
-    if(newProgs.length>0||nests.length===0){
+    console.log('[NV] Loaded from DB: nests=',nests.length,'programs=',newProgs.length);
+    if(newProgs.length>0){
+      // DB are programe → actualizează
       allPrograms.length=0;
       allPrograms.push(...newProgs);
+    } else if(nests.length===0){
+      // Nu există nesturi în DB → resetează
+      allPrograms.length=0;
     } else {
-      console.warn('[NV] Nesturi în DB dar programs goale — păstrăm datele locale');
+      // Nesturi există în DB dar fără programe (salvare eșuată anterior)
+      // Păstrăm ce avem local dacă există, altfel arătăm gol
+      console.warn('[NV] Nesturi în DB fără programe! Verifică coloana programs în tabelul nests.');
+      if(allPrograms.length===0){
+        // Nu avem nici local → arată mesaj de re-import
+        const el=document.getElementById('cards');
+        if(el) el.innerHTML='<div class="empty-state"><div class="ei">⚠️</div><div class="et" style="color:var(--warn)">Nesturile sunt în DB dar programele lipsesc.<br>Reimportează fișierele PDF/HTML.</div></div>';
+      }
     }
   }
   // Picking
