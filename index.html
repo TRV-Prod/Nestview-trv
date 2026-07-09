@@ -602,6 +602,7 @@ let nestSort='priority';        // priority|newest|oldest|sheet|machine
 let stockRecords=[];
 let stockHeaders=[];
 let stockLocations=[];
+let stockFilters={};
 let stockSort={col:null,asc:true};
 let stockFontSize=13;
 let stockImportTime=null;
@@ -1579,26 +1580,49 @@ function ocCancel(){
 function toggleDetail(ok){const sid=safeId(ok);const row=document.getElementById('det-'+sid);if(!row) return;const hidden=row.style.display==='none'||!row.style.display;row.style.display=hidden?'table-row':'none';if(hidden) expandedRows.add(ok);else expandedRows.delete(ok);}
 
 function buildDetail(p){
+  // pparts TREBUIE să fie primul — folosit de tot restul funcției
+  const pparts=Array.isArray(p.parts)?p.parts:[];
   const ok=opKey(p);const sk=sheetKey(p.sheetMaterial);const d=opData[ok]||{};
-  const cod=pickingData[sk]?.sheetCode||'—';const totalBuc=pparts.reduce((s,x)=>s+x.pcs,0);const isL=p.type==='l3030';
+  const cod=pickingData[sk]?.sheetCode||'—';
+  const totalBuc=pparts.reduce((s,x)=>s+(parseInt(x.pcs)||0),0);
+  const isL=p.type==='l3030';
   const motiv=d.motivDepasire;const sch=schedNr(p.source);
   const metaItems=[
-    {k:'Mașină',v:p.machine},{k:'Nest/Job',v:p.source},{k:'Schedule No.',v:sch||'—'},{k:'Program/Result',v:p.programName},
-    {k:'Format',v:displaySheet(p.sheetMaterial)},{k:'Cod',v:cod},
+    {k:'Mașină',v:p.machine||'—'},{k:'Nest/Job',v:p.source||'—'},
+    {k:'Schedule No.',v:sch||'—'},{k:'Program/Result',v:p.programName||p.result||'—'},
+    {k:'Format',v:displaySheet(p.sheetMaterial)||'—'},{k:'Cod',v:cod},
     {k:'Coli necesare',v:String(effectiveNec(p))},{k:'Coli debitate',v:d.coliDebitate||'—'},
     ...(motiv?[{k:'Motiv depășire',v:motiv,warn:true}]:[]),
-    {k:'Tipuri piese',v:String(p.parts.length)},{k:'Total buc.',v:String(totalBuc)},
+    {k:'Tipuri piese',v:String(pparts.length)},{k:'Total buc.',v:String(totalBuc)},
     ...(p.plateNum?[{k:'PlateNum',v:p.plateNum}]:[])
-  ].map(m=>`<div class="dm"><div class="k">${m.k}</div><div class="v ${m.warn?'warn':''}">${esc(m.v)}</div></div>`).join('');
+  ].map(m=>`<div class="dm"><div class="k">${m.k}</div><div class="v ${m.warn?'warn':''}">${esc(String(m.v||''))}</div></div>`).join('');
+
   let partsSection='';
   if(pparts.length){
-    const pparts=Array.isArray(p.parts)?p.parts:[];
-  const hasImg=pparts.some(x=>x.imageDataUrl||x.imageUrl);
-    if(hasImg){partsSection=`<div class="sec-hd">Piese (${pparts.length})</div><div class="parts-grid">${pparts.map(x=>{const imgSrc=x.imageUrl||x.imageDataUrl;return `<div class="part-thumb ${imgSrc?'':'no-img'}">${imgSrc?`<img src="${imgSrc}" loading="lazy">`:'<div class="no-img-ico">✂</div>'}<div class="pa">${esc(x.alias)}</div><div class="pp">${x.pcs} buc.</div></div>`;}).join('')}</div>`;}
-    else{const rows=p.parts.map((x,i)=>`<tr><td style="color:var(--dim);font-size:.69rem;padding:4px 9px">${i+1}</td><td style="font-family:var(--mono);font-size:.74rem;padding:4px 9px">${esc(x.alias)}</td><td style="padding:4px 9px"><span class="pcs-pill">${x.pcs}</span></td></tr>`).join('');partsSection=`<div class="sec-hd">Piese (${p.parts.length})</div><div class="parts-wrap"><table class="pt"><thead><tr><th>#</th><th>Alias</th><th>Buc.</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
+    const hasImg=pparts.some(x=>x.imageDataUrl||x.imageUrl);
+    if(hasImg){
+      partsSection=`<div class="sec-hd">Piese (${pparts.length})</div><div class="parts-grid">${
+        pparts.map(x=>{const imgSrc=x.imageUrl||x.imageDataUrl;
+          return `<div class="part-thumb ${imgSrc?'':'no-img'}">${imgSrc?`<img src="${imgSrc}" loading="lazy">`:'<div class="no-img-ico">✂</div>'}<div class="pa">${esc(x.alias||'')}</div><div class="pp">${x.pcs||0} buc.</div></div>`;
+        }).join('')}</div>`;
+    } else {
+      const rows=pparts.map((x,i)=>`<tr>
+        <td style="color:var(--dim);font-size:.69rem;padding:4px 9px">${i+1}</td>
+        <td style="font-family:var(--mono);font-size:.74rem;padding:4px 9px">${esc(x.alias||'')}</td>
+        <td style="padding:4px 9px"><span class="pcs-pill">${x.pcs||0}</span></td>
+      </tr>`).join('');
+      partsSection=`<div class="sec-hd">Piese (${pparts.length})</div>
+        <div class="parts-wrap"><table class="pt">
+          <thead><tr><th>#</th><th>Alias</th><th>Buc.</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>`;
+    }
   }
+
   const thumbSrc=p.thumbnailUrl||p.thumbnail;
-  const thumbSection=thumbSrc?`<div class="sec-hd" style="margin-top:12px">Preview</div><img src="${thumbSrc}" style="max-width:100%;border-radius:6px;border:1px solid var(--border)">`:'';
+  const thumbSection=thumbSrc?`<div class="sec-hd" style="margin-top:12px">Preview</div>
+    <img src="${thumbSrc}" style="max-width:100%;border-radius:6px;border:1px solid var(--border)">`:'';
+
   return `<div class="det-box"><div class="det-meta">${metaItems}</div>${partsSection}${thumbSection}</div>`;
 }
 
