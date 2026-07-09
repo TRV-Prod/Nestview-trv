@@ -19,10 +19,10 @@
 }
 body{font-family:-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:60px;}
 /* ── Layout flex row (views + sidebar) ── */
-#app-row{display:flex;align-items:flex-start;}
-#app-views{flex:1;min-width:0;overflow:hidden;}
+#app-row{display:flex;align-items:flex-start;align-items:flex-start;}
+#app-views{flex:1;min-width:0;overflow:auto;}
 /* ── Sidebar dropzone ── */
-#dropzone-side{
+#dropzone-side-REMOVED{position:sticky;top:48px; /* removed-duplicate
   width:var(--sidebar-w);flex-shrink:0;
   position:sticky;top:98px;          /* se lipește sub header+tabbar la scroll */
   height:calc(100vh - 98px);
@@ -169,7 +169,7 @@ body{font-family:-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:
 .sched-lbl{font-size:.58rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-right:3px;}
 .dz-browse-btn{margin-top:6px;padding:5px 8px;font-size:.62rem;font-weight:600;border-radius:6px;border:1px solid var(--border2);background:var(--surf2);color:var(--muted);cursor:pointer;transition:all .15s;text-align:center;width:80%;}
 .dz-browse-btn:hover{border-color:var(--l3030);color:var(--l3030);}
-body.drag-active #dropzone-side{background:rgba(0,212,160,.1);border-left:2px solid var(--l3030);}
+body.drag-active #dropzone-side{background:rgba(0,212,160,.1);border-left:2px solid var(--l3030);position:sticky;top:48px;align-self:flex-start;height:calc(100vh - 48px);overflow-y:auto;flex-shrink:0;}
 
 .app-header{background:var(--surf);border-bottom:1px solid var(--border);padding:12px 22px;display:flex;align-items:center;gap:11px;position:sticky;top:0;z-index:200;}
 .app-logo{width:30px;height:30px;background:conic-gradient(from 135deg,var(--l3030),var(--bodor),var(--accent));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
@@ -534,6 +534,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
     <div class="user-avatar" id="user-avatar">?</div>
     <span id="user-role-badge"></span>
     <span id="last-sync-lbl" style="font-size:.65rem;color:var(--dim);white-space:nowrap">—</span>
+    <button onclick="openPrintQueue()" id="btn-pq-header" title="Coadă printare etichete" style="background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:4px 10px;color:var(--muted);cursor:pointer;font-size:.75rem;display:none" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--muted)'">🖨 <span id="pq-hdr-cnt">0</span></button>
     <button id="btn-refresh" onclick="manualRefresh()" title="Sincronizează cu serverul"
       style="background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:4px 10px;color:var(--muted);cursor:pointer;font-size:.75rem;transition:all .15s"
       onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--muted)'">⟳ Refresh</button>
@@ -577,7 +578,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
   </div>
 </div>
 </div>
-<div id="view-stocuri" class="view">
+<div id="view-stocuri" class="view" style="max-width:100%;width:100%">
   <div style="padding:10px 16px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <strong style="font-size:.82rem;color:var(--text)">📦 Import Stocuri</strong>
     <input type="file" id="stock-file-inp-top" accept=".csv,.xlsx,.xls,.xlsm" style="display:none" onchange="importStockFile(this.files[0])">
@@ -1327,7 +1328,7 @@ function renderCard(data,container){
     partsHTML=`<div class="sec-hd">${parts.length} ${parts.length===1?'tip piesă':'tipuri piese'}</div>
     <div class="parts-wrap"><table class="pt"><thead><tr><th>#</th>${hasImg?'<th>Imagine</th>':''}<th>Alias</th><th>Buc.</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }
-  const thumbHTML=thumb?`<div class="thumb-section"><div class="sec-hd" style="margin-top:11px">Preview</div><img src="${thumb}" loading="lazy"></div>`:'';
+  const thumbHTML=''; // Thumbnail eliminat conform cerinței
   const sn=getSchedNo(data.source);
   const div=document.createElement('div');div.className='card open';
   div.innerHTML=`<div class="card-head" onclick="this.closest('.card').classList.toggle('open')">
@@ -1335,9 +1336,10 @@ function renderCard(data,container){
     ${sn?`<span style="font-family:var(--mono);font-size:.7rem;color:var(--accent);background:rgba(240,160,0,.08);border:1px solid rgba(240,160,0,.3);border-radius:5px;padding:2px 7px;flex-shrink:0">📋 ${esc(sn)}</span>`:''}
     <span class="card-prog">${prog}</span>
     <span class="card-pill">${displaySheet(data.sheetMaterial)}</span>
-    <span onclick="event.stopPropagation()" style="display:flex;align-items:center;gap:3px;flex-shrink:0">
-      <span class="prio-lbl">Prio.</span>
-      <input class="prio-inp" type="number" min="1" max="999" value="${getPriority(data.source)||''}" placeholder="—" oninput="setPriority('${esc(data.source)}',this.value)" onclick="event.stopPropagation()">
+    <span onclick="event.stopPropagation()" title="Prioritate nest (1=primul)" style="display:flex;align-items:center;gap:3px;flex-shrink:0;order:-1">
+      <input class="prio-inp" type="number" min="1" max="999" value="${getPriority(data.source)||''}" placeholder="P"
+        oninput="setPriority('${esc(data.source)}',this.value)" onclick="event.stopPropagation()"
+        style="width:52px;height:32px;font-size:1rem;font-weight:700;text-align:center;border-radius:6px;border:2px solid ${getPriority(data.source)?'var(--accent)':'var(--border2)'};background:${getPriority(data.source)?'rgba(240,160,0,.1)':'var(--surf3)'};color:${getPriority(data.source)?'var(--accent)':'var(--dim)'}">
     </span>
     <button class="card-del" onclick="event.stopPropagation();deleteNest('${esc(data.source)}')" title="Șterge">🗑</button>
     <span class="card-rpt"><strong>${rpt}</strong> coli</span>
@@ -1390,7 +1392,9 @@ function renderPicking(){
   for(const p of fp){const sk=sheetKey(p.sheetMaterial);const gk=`${p.source}|||${sk}`;if(!nestGroups[gk]) nestGroups[gk]={type:p.type,machine:p.machine,source:p.source,sk,sheetMaterial:p.sheetMaterial,totalColi:0};nestGroups[gk].totalColi+=effectiveNec(p);}
   const isNestRez=gk=>{const g=nestGroups[gk];if(!g) return false;const d=pickingData[g.sk];const r=parseInt(d?.reservedQty)||0;return r>0&&r>=sheetNeed(g.sk);};
   function nestRow(g,gk){if(g.sk) ensurePick(g.sk);const d=pickingData[g.sk]||{sheetCode:'',reservedQty:'',reservedAt:null,surplusMotiv:''};const sch=schedNr(g.source);
-    return `<tr><td><span class="mbadge ${g.type==='l3030'?'mb-l':'mb-b'}" style="font-size:.6rem">${g.type==='l3030'?'⚡':'🔵'}</span></td>
+    const prio=getPriority(g.source);
+    return `<tr>
+      <td style="text-align:center">${prio?`<span style="display:inline-block;min-width:26px;height:26px;line-height:26px;border-radius:50%;background:rgba(240,160,0,.15);color:var(--accent);font-weight:700;font-size:.8rem;border:1px solid rgba(240,160,0,.4)">${prio}</span>`:'<span style="color:var(--dim)">—</span>'}</td><td><span class="mbadge ${g.type==='l3030'?'mb-l':'mb-b'}" style="font-size:.6rem">${g.type==='l3030'?'⚡':'🔵'}</span></td>
       <td style="font-family:var(--mono);font-size:.78rem;font-weight:600">${esc(g.source)}</td>
       <td style="font-family:var(--mono);font-size:.76rem">${displaySheet(g.sheetMaterial)}</td>
       <td style="font-size:.76rem;color:var(--muted)">${g.machine}</td>
@@ -1403,7 +1407,7 @@ function renderPicking(){
   function sortByPrio(entries){return entries.sort(([,a],[,b])=>{const pa=getPriority(a.source),pb=getPriority(b.source);if(!pa&&!pb) return 0;if(!pa) return 1;if(!pb) return -1;return pa-pb;});}
   const activeGroups=sortByPrio(Object.entries(nestGroups).filter(([gk])=>!isNestRez(gk)));
   const rezGroups=sortByPrio(Object.entries(nestGroups).filter(([gk])=>isNestRez(gk)));
-  const nsHead=`<thead><tr><th>Tip</th><th>Nest/Job</th><th>Format</th><th>Mașină</th><th>SCH #</th><th style="text-align:center">Coli</th><th>Cod</th><th>Data Rez.</th><th>Motiv suplim.</th></tr></thead>`;
+  const nsHead=`<thead><tr><th>Prio.</th><th>Tip</th><th>Nest/Job</th><th>Format</th><th>Mașină</th><th>SCH #</th><th style="text-align:center">Coli</th><th>Cod</th><th>Data Rez.</th><th>Motiv suplim.</th></tr></thead>`;
   const activeRows=activeGroups.map(([gk,g])=>nestRow(g,gk)).join('');
   const rezRows=rezGroups.map(([gk,g])=>nestRow(g,gk)).join('');
   el.innerHTML=`
@@ -1414,7 +1418,7 @@ function renderPicking(){
     </table></div>
     <div class="s-head" style="margin-top:18px">📦 Nesturi în așteptare (${activeGroups.length})</div>
     <div class="filter-bar" style="margin-bottom:9px"><span class="lbl">Mașină:</span>${['all','l3030','bodor'].map(f=>`<button class="filt-btn pk-filt ${f!=='all'?f:''} ${pickFilter===f?'active':''}" data-f="${f}" onclick="setPickFilter('${f}')">${f==='all'?'Toate':f==='l3030'?'⚡ L3030':'🔵 Bodor'}</button>`).join('')}</div>
-    <div class="sc"><table class="ns">${nsHead}<tbody>${activeRows||'<tr><td colspan="9" style="padding:12px;text-align:center;color:var(--dim);font-style:italic">—</td></tr>'}</tbody></table></div>
+    <div class="sc"><table class="ns">${nsHead}<tbody>${activeRows||'<tr><td colspan="10" style="padding:12px;text-align:center;color:var(--dim);font-style:italic">—</td></tr>'}</tbody></table></div>
     ${rezGroups.length?`<div class="s-head" style="margin-top:16px">✅ Rezervate (${rezGroups.length})</div><div class="sc"><table class="ns">${nsHead}<tbody>${rezRows}</tbody></table></div>`:''}`;
 }
 
@@ -1495,7 +1499,7 @@ function renderRaportare(){
     const clr=deb===0?'var(--dim)':deb>=nec?'var(--ok)':'var(--accent)';
     const sid=safeId(ok);const isL=p.type==='l3030';const isExp=expandedRows.has(ok);
     return `<tr class="data-row" onclick="toggleDetail('${ok.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">
-      <td><div class="tdi" style="text-align:center;font-family:var(--mono);font-weight:700;color:var(--accent)">${getPriority(p.source)||'<span style="color:var(--dim)">—</span>'}</div></td>
+      <td><div class="tdi" style="text-align:center">${getPriority(p.source)?`<span style="display:inline-block;min-width:26px;height:26px;line-height:26px;border-radius:50%;background:rgba(240,160,0,.15);color:var(--accent);font-weight:700;font-size:.8rem;border:1px solid rgba(240,160,0,.4)">${getPriority(p.source)}</span>`:'<span style="color:var(--dim)">—</span>'}</div></td>
       <td><div class="tdi"><span class="mbadge ${isL?'mb-l':'mb-b'}" style="font-size:.6rem">${isL?'⚡':'🔵'}</span></div></td>
       <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem;color:var(--muted)">${esc(p.source)}</div></td>
       <td><div class="tdi" style="font-family:var(--mono);font-size:.77rem;font-weight:600">${esc(p.programName)}</div></td>
@@ -1667,9 +1671,7 @@ function buildDetail(p){
     }
   }
 
-  const thumbSrc=p.thumbnailUrl||p.thumbnail;
-  const thumbSection=thumbSrc?`<div class="sec-hd" style="margin-top:12px">Preview</div>
-    <img src="${thumbSrc}" style="max-width:100%;border-radius:6px;border:1px solid var(--border)">`:'';
+  const thumbSection=''; // Thumbnail eliminat
 
   return `<div class="det-box"><div class="det-meta">${metaItems}</div>${partsSection}${thumbSection}</div>`;
 }
@@ -1734,6 +1736,19 @@ function ocCancel(){
 
 <script>
 /* ══ FUNCȚII STOCURI — globale, accesibile din onclick HTML ══ */
+
+
+function parseItemName(name){
+  if(!name) return{tip:'',dim:''};
+  const s=String(name).trim();
+  // Dimensiuni la finalul stringului: ex "4X1000X2000" sau "1.5x1000x2000"
+  const m=s.match(/\s+(\d+[.,]?\d*)\s*[xX×]\s*(\d+[.,]?\d*)\s*[xX×]\s*(\d+[.,]?\d*)\s*$/);
+  if(!m) return{tip:s,dim:''};
+  const tip=s.slice(0,m.index).trim();
+  // Format: grosime x lungime x latime → afișăm Lungime x Latime x Grosime
+  const grosime=m[1].replace(',','.'),lungime=m[2].replace(',','.'),latime=m[3].replace(',','.');
+  return{tip,dim:lungime+' × '+latime+' × '+grosime+' mm'};
+}
 
 function stockSortBy(col){
   if(stockSort.col===col) stockSort.asc=!stockSort.asc;
@@ -2490,7 +2505,12 @@ async function importStockFile(file){
 function renderStocuri(){
   const el=document.getElementById('stocuri-main');
   if(!el) return;
-  const displayHeaders=stockHeaders.length?stockHeaders:['ITEM NR','ITEM NAME','ITEM DESCRIPTION','LOCATION','LOTNR','STANDARD QTY','STANDARD U/M','AVG'];
+  // Înlocuiește ITEM NAME cu TIP + DIMENSIUNI
+  const baseHeaders=stockHeaders.length?stockHeaders:['ITEM NR','ITEM NAME','LOCATION','LOTNR','STANDARD QTY','STANDARD U/M'];
+  const displayHeaders=baseHeaders.reduce((acc,h)=>{
+    if(h==='ITEM NAME') return [...acc,'TIP','DIMENSIUNI'];
+    return [...acc,h];
+  },[]);
 
   // Apply filters
   let rows=stockRecords.map(r=>r.data||r);
@@ -2576,7 +2596,7 @@ function renderStocuri(){
         ${canManageUsers()?`<button class="btn-sm btn-cancel-def" onclick="showLabelConfig()">⚙ Etichetă</button>`:''}
       </div>
       <div style="overflow:auto;border-radius:var(--r);border:1px solid var(--border);max-height:calc(100vh - 280px)">
-        <table style="border-collapse:collapse;width:100%;font-size:${fs}">
+        <table style="border-collapse:collapse;width:100%;font-size:${fs};margin:0 auto">
           <thead><tr>${tableHeaders}</tr></thead>
           <tbody>${recRows||'<tr><td colspan="'+(displayHeaders.length+1)+'" style="padding:12px;text-align:center;color:var(--dim)">Niciun rezultat pentru filtrele aplicate.</td></tr>'}</tbody>
         </table>
@@ -2822,31 +2842,18 @@ initApp();
 // ── Render o etichetă ca HTML ──
 function renderLabelHtml(row, cfg, qrId){
   const fields=(cfg.fields||[]).filter(f=>f.show!==false);
-  const qrData=fields.map(f=>row[f.key]||'').filter(Boolean).join('|');
+  const qrData=fields.map(f=>String(row[f.key]||'')).filter(Boolean).join('|');
   const w=cfg.widthMm||60, h=cfg.heightMm||85;
-  const qrSz=cfg.qrSizePx||90;
-
+  const qrSz=Math.min(cfg.qrSizePx||90,Math.round(h*3.78-12));
   const fieldRows=fields.map(f=>{
     const val=String(row[f.key]||'—');
-    const style=[
-      `font-size:${f.fontSize||10}pt`,
-      f.bold?'font-weight:700':'',
-      f.italic?'font-style:italic':'',
-      f.underline?'text-decoration:underline':'',
-      `color:${f.color||'#000'}`,
-      `text-align:${f.align||'left'}`
-    ].filter(Boolean).join(';');
-    return `<div style="${style};margin:2px 0;line-height:1.3;word-break:break-word">
-      <span style="font-weight:bold;font-size:.85em;color:#555">${f.label||f.key}: </span>${val}
-    </div>`;
+    const style=[`font-size:${f.fontSize||10}pt`,f.bold?'font-weight:700':'',f.italic?'font-style:italic':'',f.underline?'text-decoration:underline':'',`color:${f.color||'#000'}`,`text-align:${f.align||'left'}`].filter(Boolean).join(';');
+    return `<div style="${style};margin:1mm 0;line-height:1.3;word-break:break-word"><span style="font-weight:bold;font-size:.8em;color:#666">${f.label||f.key}: </span>${val}</div>`;
   }).join('');
-
-  return `
-    <div class="lbl-unit" style="width:${w}mm;height:${h}mm;box-sizing:border-box;border:1px solid #888;padding:4mm;
-      display:flex;flex-direction:column;font-family:Arial,sans-serif;background:#fff;color:#000;overflow:hidden;page-break-inside:avoid">
-      ${cfg.showQr!==false?`<div id="${qrId||'qr_'+Date.now()}" style="text-align:center;margin-bottom:3mm;flex-shrink:0"></div>`:''}
-      <div style="flex:1;overflow:hidden">${fieldRows}</div>
-    </div>`;
+  return `<div class="lbl-unit" style="width:${w}mm;height:${h}mm;display:flex;border:1px solid #888;background:#fff;color:#000;overflow:hidden;page-break-inside:avoid">
+    <div style="flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:3mm;width:${qrSz}px;min-width:${qrSz}px" id="${qrId||'qr_'+Date.now()}"></div>
+    <div style="flex:1;padding:3mm 4mm;border-left:1px solid #ddd;overflow:hidden;display:flex;flex-direction:column;justify-content:center">${fieldRows}</div>
+  </div>`;
 }
 
 // ── Label Config Modal ──
@@ -2956,10 +2963,16 @@ function addToQueue(rowJson){
 
 function updateQueueBadge(){
   const n=printQueue.length;
+  // FAB (floating)
   const fab=document.getElementById('pq-fab');
   const cnt=document.getElementById('pq-count');
-  if(fab) fab.style.display=n>0?'flex':'none';
+  if(fab) fab.style.display='none'; // header button replaces FAB
   if(cnt) cnt.textContent=n;
+  // Header button
+  const hdrBtn=document.getElementById('btn-pq-header');
+  const hdrCnt=document.getElementById('pq-hdr-cnt');
+  if(hdrBtn) hdrBtn.style.display=n>0?'inline-flex':'none';
+  if(hdrCnt) hdrCnt.textContent=n;
   const mc=document.getElementById('pq-modal-count');if(mc) mc.textContent=n;
 }
 
@@ -3002,79 +3015,108 @@ function clearPrintQueue(){
 function printAllLabels(){
   if(!printQueue.length){alert('Coada e goală!');return;}
   const cfg=labelConfig;
-
-  // Determine grid layout
   const perPageMap={'3x1':{cols:1,rows:3},'3x1-wide':{cols:1,rows:3},'6x2':{cols:2,rows:3},'9x3':{cols:3,rows:3}};
   const grid=perPageMap[cfg.perPage||'6x2']||{cols:2,rows:3};
   const perPage=grid.cols*grid.rows;
-
-  // A4 usable: 190mm × 277mm (with 10mm margins)
-  const pageW=190,pageH=277;
-  const gap=3; // mm between labels
+  const pageW=190,pageH=277,gap=3;
   const lblW=(pageW-(grid.cols-1)*gap)/grid.cols;
   const lblH=(pageH-(grid.rows-1)*gap)/grid.rows;
-  const useCfg={...cfg,widthMm:lblW,heightMm:lblH};
-
-  // Group labels into pages
-  const pages=[];
-  for(let i=0;i<printQueue.length;i+=perPage){
-    pages.push(printQueue.slice(i,i+perPage));
-  }
-
-  // Build print HTML
-  let labelIdx=0;
-  const pagesHtml=pages.map((page,pi)=>`
-    <div class="print-page" ${pi<pages.length-1?'style="page-break-after:always"':''}>
-      <div class="label-grid" style="display:grid;grid-template-columns:repeat(${grid.cols},${lblW}mm);gap:${gap}mm;width:${pageW}mm">
-        ${page.map(row=>{
-          const qid='pqr_'+labelIdx++;
-          return renderLabelHtml(row,useCfg,qid);
-        }).join('')}
-      </div>
-    </div>`).join('');
 
   const win=window.open('','_blank','width=900,height=700');
   if(!win){alert('Permite pop-up-uri pentru această pagină!');return;}
 
+  // Pass data directly on the window object BEFORE document.write
+  win._pq=JSON.parse(JSON.stringify(printQueue));
+  win._cfg=JSON.parse(JSON.stringify(cfg));
+  win._grid={cols:grid.cols,lblW,lblH,gap,perPage};
+
+  win.document.open();
   win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
     <title>Etichete (${printQueue.length})</title>
-    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"><\\/script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"><\/script>
     <style>
       *{box-sizing:border-box;margin:0;padding:0}
-      body{background:#f0f0f0;font-family:Arial,sans-serif}
-      .print-page{background:#fff;width:210mm;min-height:297mm;margin:10mm auto;padding:10mm;box-shadow:0 2px 10px rgba(0,0,0,.2)}
-      .lbl-unit{display:flex;flex-direction:column;background:#fff;color:#000}
-      .no-print{position:fixed;top:10px;right:10px;display:flex;gap:8px;z-index:999;background:rgba(255,255,255,.95);padding:10px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.2)}
-      .no-print button{padding:8px 16px;font-size:13px;cursor:pointer;border-radius:5px;border:1px solid #ccc}
-      .btn-print{background:#000;color:#fff;border-color:#000!important}
-      @media print{
-        body{background:#fff}
-        .print-page{margin:0;padding:10mm;box-shadow:none;page-break-after:always}
-        .print-page:last-child{page-break-after:avoid}
-        .no-print{display:none!important}
-        @page{size:A4 portrait;margin:0}
-      }
+      body{background:#eee;font-family:Arial,sans-serif}
+      .print-page{background:#fff;width:210mm;min-height:297mm;margin:8mm auto;padding:10mm;box-shadow:0 2px 8px rgba(0,0,0,.2)}
+      .lbl-grid{display:grid;gap:${gap}mm}
+      .lbl-unit{display:flex;border:1px solid #888;background:#fff;color:#000;page-break-inside:avoid;overflow:hidden}
+      .lbl-qr{flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:3mm;background:#fff}
+      .lbl-fields{flex:1;padding:3mm 4mm;display:flex;flex-direction:column;justify-content:center;border-left:1px solid #ddd;overflow:hidden}
+      .lbl-field{margin:1mm 0;line-height:1.3;word-break:break-word}
+      .no-print{position:fixed;top:10px;right:10px;z-index:999;background:rgba(255,255,255,.96);padding:10px 14px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.25);display:flex;align-items:center;gap:10px}
+      @media print{body{background:#fff}.print-page{margin:0;padding:10mm;box-shadow:none;page-break-after:always}.print-page:last-child{page-break-after:avoid}.no-print{display:none}@page{size:A4 portrait;margin:0}}
     </style></head><body>
     <div class="no-print">
-      <span style="font-size:12px;color:#666">${printQueue.length} etichete / ${pages.length} pagini</span>
-      <button class="btn-print" onclick="window.print()">🖨 Printează</button>
-      <button onclick="window.close()">✕ Închide</button>
+      <span id="lbl-status" style="font-size:12px;color:#555">Se generează...</span>
+      <button onclick="window.print()" style="padding:7px 16px;font-size:13px;cursor:pointer;background:#000;color:#fff;border:none;border-radius:5px">🖨 Printează</button>
+      <button onclick="window.close()" style="padding:7px 12px;font-size:13px;cursor:pointer;border:1px solid #ccc;border-radius:5px">✕</button>
     </div>
-    ${pagesHtml}
+    <div id="pages-wrap"></div>
     <script>
-      // Init QR codes
-      document.querySelectorAll('[id^="pqr_"]').forEach(el=>{
-        const idx=parseInt(el.id.replace('pqr_',''));
-        const rows=${JSON.stringify(printQueue)};
-        const cfg=${JSON.stringify(cfg)};
-        if(!rows[idx]) return;
-        const fields=(cfg.fields||[]).filter(f=>f.show!==false);
-        const qrData=fields.map(f=>String(rows[idx][f.key]||'')).filter(Boolean).join('|');
-        try{new QRCode(el,{text:qrData||'N/A',width:Math.round(cfg.qrSizePx||90),height:Math.round(cfg.qrSizePx||90),correctLevel:0});}
-        catch(e){el.textContent='QR ERR';}
-      });
-    <\/script>
-    `);
+    window.addEventListener('load',function(){
+      const pq=window._pq||[];
+      const cfg=window._cfg||{fields:[],widthMm:60,heightMm:85,qrSizePx:90};
+      const grid=window._grid||{cols:2,lblW:93.5,lblH:87,gap:3,perPage:6};
+      const lblW=grid.lblW,lblH=grid.lblH,gap=grid.gap;
+      const fields=(cfg.fields||[]).filter(f=>f.show!==false);
+      const wrap=document.getElementById('pages-wrap');
+      const perPage=grid.perPage;
+      document.getElementById('lbl-status').textContent=pq.length+' etichete / '+Math.ceil(pq.length/perPage)+' pagini';
+
+      for(let pi=0;pi*perPage<pq.length;pi++){
+        const page=pq.slice(pi*perPage,(pi+1)*perPage);
+        const pgDiv=document.createElement('div');
+        pgDiv.className='print-page';
+        pgDiv.style.cssText=pi<Math.ceil(pq.length/perPage)-1?'page-break-after:always':'';
+        const gridDiv=document.createElement('div');
+        gridDiv.className='lbl-grid';
+        gridDiv.style.gridTemplateColumns='repeat('+grid.cols+','+lblW+'mm)';
+        gridDiv.style.gap=gap+'mm';
+        gridDiv.style.width=(grid.cols*lblW+(grid.cols-1)*gap)+'mm';
+
+        page.forEach(function(row,li){
+          const uid='lbl_'+(pi*perPage+li);
+          const qrData=fields.map(function(f){return String(row[f.key]||'');}).filter(Boolean).join('|');
+          const qrSz=Math.min(cfg.qrSizePx||90,Math.round(lblH*3.78-12));
+
+          const div=document.createElement('div');
+          div.className='lbl-unit';
+          div.style.width=lblW+'mm';
+          div.style.height=lblH+'mm';
+
+          // QR column
+          const qrCol=document.createElement('div');
+          qrCol.className='lbl-qr';
+          qrCol.style.width=qrSz+'px';
+          qrCol.style.minWidth=qrSz+'px';
+          const qrEl=document.createElement('div');
+          qrEl.id=uid;
+          qrCol.appendChild(qrEl);
+          div.appendChild(qrCol);
+
+          // Fields column
+          const fCol=document.createElement('div');
+          fCol.className='lbl-fields';
+          fields.forEach(function(f){
+            const val=String(row[f.key]||'—');
+            const fd=document.createElement('div');
+            fd.className='lbl-field';
+            fd.style.cssText='font-size:'+(f.fontSize||10)+'pt;'+(f.bold?'font-weight:700;':'')+(f.italic?'font-style:italic;':'')+(f.underline?'text-decoration:underline;':'')+'color:'+(f.color||'#000')+';text-align:'+(f.align||'left');
+            fd.innerHTML='<span style="font-weight:bold;font-size:.8em;color:#666">'+(f.label||f.key)+': <\/span>'+val;
+            fCol.appendChild(fd);
+          });
+          div.appendChild(fCol);
+          gridDiv.appendChild(div);
+
+          // Init QR
+          try{new QRCode(qrEl,{text:qrData||'N/A',width:qrSz,height:qrSz,correctLevel:0});}
+          catch(e){qrEl.textContent='QR';}
+        });
+        pgDiv.appendChild(gridDiv);
+        wrap.appendChild(pgDiv);
+      }
+    });
+    <\/script></body></html>`);
   win.document.close();
 }
 
