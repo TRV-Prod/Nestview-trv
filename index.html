@@ -125,6 +125,42 @@ body{font-family:-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:
   transition:all .15s;white-space:nowrap;}
 .cfg-test-btn:hover{border-color:var(--accent);color:var(--accent);}
 .cfg-test-result{font-size:.74rem;font-family:var(--mono);}
+
+/* ── Label Config Modal ── */
+#label-cfg-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:3000;display:none;align-items:center;justify-content:center;padding:16px;overflow-y:auto}
+.lcfg-box{background:var(--surf);border:1px solid var(--border);border-radius:var(--r);width:min(900px,96vw);max-height:90vh;overflow-y:auto;box-shadow:var(--sh);display:flex;flex-direction:column}
+.lcfg-header{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.lcfg-header h3{font-size:.95rem;font-weight:700;margin:0;flex:1}
+.lcfg-body{display:grid;grid-template-columns:1fr 340px;gap:0;min-height:0}
+.lcfg-left{padding:16px;border-right:1px solid var(--border);overflow-y:auto}
+.lcfg-right{padding:14px;display:flex;flex-direction:column;gap:10px}
+.lcfg-section{margin-bottom:14px}
+.lcfg-section h4{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
+.lf-row{display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--surf2);border:1px solid var(--border);border-radius:6px;margin-bottom:5px;flex-wrap:wrap}
+.lf-drag{cursor:grab;color:var(--dim);font-size:1rem;flex-shrink:0}
+.lf-key{font-family:var(--mono);font-size:.72rem;color:var(--accent);min-width:80px;flex-shrink:0}
+.lf-label-inp{background:var(--surf3);border:1px solid var(--border2);border-radius:4px;padding:3px 7px;color:var(--text);font-size:.75rem;width:90px;outline:none}
+.lf-fmt{display:flex;gap:3px;align-items:center}
+.lf-btn{width:24px;height:24px;border:1px solid var(--border2);background:var(--surf3);border-radius:4px;cursor:pointer;font-size:.75rem;display:flex;align-items:center;justify-content:center;color:var(--muted);transition:all .12s}
+.lf-btn.active{background:var(--accent);border-color:var(--accent);color:#000}
+.lf-btn:hover{border-color:var(--accent);color:var(--accent)}
+.lf-size{width:40px;background:var(--surf3);border:1px solid var(--border2);border-radius:4px;padding:2px 4px;text-align:center;font-size:.72rem;color:var(--text);outline:none}
+.lf-color{width:28px;height:24px;border:none;padding:0;border-radius:4px;cursor:pointer;background:none}
+.lf-show{width:16px;height:16px;cursor:pointer;accent-color:var(--accent);flex-shrink:0}
+.lf-order{display:flex;flex-direction:column;gap:1px}
+.lf-order button{width:18px;height:12px;font-size:.5rem;background:var(--surf3);border:1px solid var(--border);border-radius:2px;cursor:pointer;color:var(--muted);padding:0;line-height:1}
+/* Label preview */
+.lbl-preview-wrap{border:2px dashed var(--border);border-radius:6px;padding:8px;background:var(--surf2);display:flex;align-items:center;justify-content:center;min-height:200px}
+.lbl-preview-inner{background:#fff;color:#000;border:1px solid #aaa;font-family:Arial,sans-serif;padding:6px;box-shadow:0 2px 6px rgba(0,0,0,.15)}
+/* Print queue button */
+#pq-fab{position:fixed;bottom:20px;right:20px;background:var(--accent);color:#000;border:none;border-radius:24px;padding:10px 18px;font-size:.82rem;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.4);z-index:400;display:none;align-items:center;gap:8px;transition:transform .15s}
+#pq-fab:hover{transform:scale(1.05)}
+#pq-count{background:#000;color:var(--accent);border-radius:10px;padding:1px 7px;font-size:.75rem;min-width:20px;text-align:center}
+/* Print queue modal */
+#pq-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:3000;display:none;align-items:flex-end;justify-content:center;padding:20px}
+.pq-box{background:var(--surf);border:1px solid var(--border);border-radius:var(--r) var(--r) 0 0;width:min(700px,96vw);max-height:70vh;overflow-y:auto;padding:16px;box-shadow:var(--sh)}
+.pq-item{display:flex;align-items:center;gap:10px;padding:6px 10px;background:var(--surf2);border-radius:6px;margin-bottom:5px;font-size:.78rem}
+.pq-item-info{flex:1;font-family:var(--mono)}
 .sched-inp{background:var(--surf3);border:1px solid var(--border2);border-radius:5px;
   padding:3px 8px;color:var(--accent);font-size:.72rem;font-family:var(--mono);outline:none;
   width:96px;transition:border-color .15s;letter-spacing:.04em;}
@@ -606,7 +642,19 @@ let stockFilters={};
 let stockSort={col:null,asc:true};
 let stockFontSize=13;
 let stockImportTime=null;
-let labelConfig={fields:['ITEM NR','LOTNR','ITEM NAME'],barcodeType:'qr'};
+let labelConfig={
+  fields:[
+    {key:'ITEM NR',    label:'Cod articol:',   show:true,  bold:true,  italic:false,underline:false,color:'#000000',fontSize:11,align:'left'},
+    {key:'ITEM NAME',  label:'Denumire:',      show:true,  bold:false, italic:false,underline:false,color:'#000000',fontSize:10,align:'left'},
+    {key:'LOTNR',      label:'Lot:',           show:true,  bold:false, italic:false,underline:false,color:'#333333',fontSize:9, align:'left'},
+    {key:'LOCATION',   label:'Locație:',       show:true,  bold:true,  italic:false,underline:false,color:'#0055aa',fontSize:11,align:'left'},
+    {key:'STANDARD QTY',label:'Cantitate:',   show:true,  bold:true,  italic:false,underline:false,color:'#006600',fontSize:12,align:'right'},
+    {key:'STANDARD U/M',label:'U/M:',         show:true,  bold:false, italic:false,underline:false,color:'#333333',fontSize:9, align:'left'},
+  ],
+  widthMm:60, heightMm:85, qrSizePx:90, showQr:true,
+  labelsPerRow:3, fontSize:10
+};
+let printQueue=[];
 
 // ── Variabile Storage Supabase ──
 let storageUsedBytes=0;
@@ -1747,7 +1795,7 @@ function printLabel(rowJson){
       try{new QRCode(document.getElementById('qrc'),{text:${JSON.stringify(qrText||'N/A')},width:110,height:110,correctLevel:0});}
       catch(e){document.getElementById('qrc').textContent='QR: '+e.message;}
       setTimeout(()=>window.print(),800);
-    <\/script></body></html>`);
+    <\/script>`);
   win.document.close();
 }
 </script>
@@ -2690,6 +2738,349 @@ document.addEventListener('keydown',e=>{
 });
 
 initApp();
+</script>
+<!-- ══ LABEL CONFIG MODAL ══ -->
+<div id="label-cfg-overlay">
+  <div class="lcfg-box">
+    <div class="lcfg-header">
+      <h3>⚙ Configurare Etichetă</h3>
+      <button class="logout-btn" onclick="closeLabelCfg()">✕ Închide</button>
+      <button class="auth-btn" style="max-width:160px;padding:6px 14px;font-size:.78rem" onclick="saveLabelCfg()">✓ Salvează</button>
+    </div>
+    <div class="lcfg-body">
+      <div class="lcfg-left">
+        <div class="lcfg-section">
+          <h4>Câmpuri etichetă (drag pentru reordonare)</h4>
+          <div id="lf-list"></div>
+        </div>
+      </div>
+      <div class="lcfg-right">
+        <div class="lcfg-section">
+          <h4>Dimensiuni etichetă</h4>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div><label style="font-size:.7rem;color:var(--muted)">Lățime (mm)</label>
+              <input type="number" id="lcfg-w" class="pk-input qty" style="width:100%" min="30" max="200" value="60"></div>
+            <div><label style="font-size:.7rem;color:var(--muted)">Înălțime (mm)</label>
+              <input type="number" id="lcfg-h" class="pk-input qty" style="width:100%" min="30" max="200" value="85"></div>
+            <div><label style="font-size:.7rem;color:var(--muted)">QR code (px)</label>
+              <input type="number" id="lcfg-qr" class="pk-input qty" style="width:100%" min="50" max="200" value="90"></div>
+            <div style="display:flex;align-items:flex-end;gap:8px;padding-bottom:4px">
+              <label style="display:flex;align-items:center;gap:6px;font-size:.77rem">
+                <input type="checkbox" id="lcfg-showqr" checked style="accent-color:var(--accent)">
+                Afișează QR
+              </label>
+            </div>
+          </div>
+          <div style="margin-top:10px">
+            <label style="font-size:.7rem;color:var(--muted)">Etichete per pagină A4</label>
+            <select id="lcfg-perpage" class="rs" style="width:100%;margin-top:4px">
+              <option value="3x1">3 pe pagină (coloană)</option>
+              <option value="3x1-wide">3 pe pagină (lățime completă)</option>
+              <option value="6x2" selected>6 pe pagină (2 coloane)</option>
+              <option value="9x3">9 pe pagină (3 coloane)</option>
+            </select>
+          </div>
+        </div>
+        <div class="lcfg-section">
+          <h4>Previzualizare</h4>
+          <div class="lbl-preview-wrap">
+            <div id="lbl-preview-inner"></div>
+          </div>
+          <button class="btn-sm" style="margin-top:8px;width:100%" onclick="updateLabelPreview()">⟳ Actualizează preview</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ PRINT QUEUE MODAL ══ -->
+<div id="pq-overlay" onclick="if(event.target===this)closePrintQueue()">
+  <div class="pq-box">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <h3 style="margin:0;font-size:.95rem;flex:1">🖨 Coadă Printare (<span id="pq-modal-count">0</span> etichete)</h3>
+      <button class="btn-sm btn-cancel-def" onclick="clearPrintQueue()">🗑 Golește</button>
+      <button class="auth-btn" style="max-width:160px;padding:7px 14px;font-size:.8rem" onclick="printAllLabels()">🖨 Printează Toate</button>
+      <button class="logout-btn" onclick="closePrintQueue()">✕</button>
+    </div>
+    <div id="pq-items"></div>
+    <div id="pq-empty" style="text-align:center;padding:24px;color:var(--dim);font-size:.82rem">Coada e goală. Adaugă etichete din tab-ul Stocuri.</div>
+  </div>
+</div>
+
+<!-- ══ PRINT QUEUE FAB ══ -->
+<button id="pq-fab" onclick="openPrintQueue()">
+  🖨 Coadă <span id="pq-count">0</span>
+</button>
+
+
+
+
+
+<script>
+/* ══ LABEL SYSTEM — Config, Print Queue, A4 Layout ══ */
+
+// ── Render o etichetă ca HTML ──
+function renderLabelHtml(row, cfg, qrId){
+  const fields=(cfg.fields||[]).filter(f=>f.show!==false);
+  const qrData=fields.map(f=>row[f.key]||'').filter(Boolean).join('|');
+  const w=cfg.widthMm||60, h=cfg.heightMm||85;
+  const qrSz=cfg.qrSizePx||90;
+
+  const fieldRows=fields.map(f=>{
+    const val=String(row[f.key]||'—');
+    const style=[
+      `font-size:${f.fontSize||10}pt`,
+      f.bold?'font-weight:700':'',
+      f.italic?'font-style:italic':'',
+      f.underline?'text-decoration:underline':'',
+      `color:${f.color||'#000'}`,
+      `text-align:${f.align||'left'}`
+    ].filter(Boolean).join(';');
+    return `<div style="${style};margin:2px 0;line-height:1.3;word-break:break-word">
+      <span style="font-weight:bold;font-size:.85em;color:#555">${f.label||f.key}: </span>${val}
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="lbl-unit" style="width:${w}mm;height:${h}mm;box-sizing:border-box;border:1px solid #888;padding:4mm;
+      display:flex;flex-direction:column;font-family:Arial,sans-serif;background:#fff;color:#000;overflow:hidden;page-break-inside:avoid">
+      ${cfg.showQr!==false?`<div id="${qrId||'qr_'+Date.now()}" style="text-align:center;margin-bottom:3mm;flex-shrink:0"></div>`:''}
+      <div style="flex:1;overflow:hidden">${fieldRows}</div>
+    </div>`;
+}
+
+// ── Label Config Modal ──
+function showLabelConfig(){
+  const overlay=document.getElementById('label-cfg-overlay');
+  overlay.style.display='flex';
+  // Populate fields
+  const cfg=labelConfig;
+  document.getElementById('lcfg-w').value=cfg.widthMm||60;
+  document.getElementById('lcfg-h').value=cfg.heightMm||85;
+  document.getElementById('lcfg-qr').value=cfg.qrSizePx||90;
+  document.getElementById('lcfg-showqr').checked=cfg.showQr!==false;
+  renderLfList();
+  updateLabelPreview();
+}
+function closeLabelCfg(){document.getElementById('label-cfg-overlay').style.display='none';}
+
+function renderLfList(){
+  const list=document.getElementById('lf-list');if(!list) return;
+  // Ensure all columns from stockHeaders are available
+  const allKeys=[...new Set([...labelConfig.fields.map(f=>f.key),...stockHeaders])];
+  // Add missing keys to config
+  allKeys.forEach(k=>{if(!labelConfig.fields.find(f=>f.key===k)){labelConfig.fields.push({key:k,label:k+':',show:false,bold:false,italic:false,underline:false,color:'#000000',fontSize:10,align:'left'});}});
+
+  list.innerHTML=labelConfig.fields.map((f,i)=>`
+    <div class="lf-row" data-idx="${i}">
+      <div class="lf-order">
+        <button onclick="lfMove(${i},-1)" title="Sus">▲</button>
+        <button onclick="lfMove(${i},1)" title="Jos">▼</button>
+      </div>
+      <input type="checkbox" class="lf-show" ${f.show!==false?'checked':''} onchange="lfToggle(${i},this.checked)" title="Afișează">
+      <span class="lf-key">${f.key}</span>
+      <input class="lf-label-inp" value="${esc(f.label||f.key+':')}" oninput="lfSet(${i},'label',this.value)" placeholder="Etichetă:">
+      <div class="lf-fmt">
+        <button class="lf-btn ${f.bold?'active':''}" onclick="lfToggleFmt(${i},'bold')" title="Bold"><b>B</b></button>
+        <button class="lf-btn ${f.italic?'active':''}" onclick="lfToggleFmt(${i},'italic')" title="Italic"><i>I</i></button>
+        <button class="lf-btn ${f.underline?'active':''}" onclick="lfToggleFmt(${i},'underline')" title="Subliniat"><u>U</u></button>
+        <input type="color" class="lf-color" value="${f.color||'#000000'}" oninput="lfSet(${i},'color',this.value)" title="Culoare text">
+        <input type="number" class="lf-size" value="${f.fontSize||10}" min="6" max="24" oninput="lfSet(${i},'fontSize',parseInt(this.value)||10)" title="Mărime font (pt)">
+        <select style="font-size:.65rem;background:var(--surf3);border:1px solid var(--border2);border-radius:4px;color:var(--muted);padding:2px" onchange="lfSet(${i},'align',this.value)">
+          ${['left','center','right'].map(a=>`<option value="${a}" ${(f.align||'left')===a?'selected':''}>${a==='left'?'←':a==='center'?'↔':'→'}</option>`).join('')}
+        </select>
+      </div>
+    </div>`).join('');
+}
+
+function lfMove(idx,dir){
+  const arr=labelConfig.fields;const newIdx=idx+dir;
+  if(newIdx<0||newIdx>=arr.length) return;
+  [arr[idx],arr[newIdx]]=[arr[newIdx],arr[idx]];
+  renderLfList();updateLabelPreview();
+}
+function lfToggle(idx,val){labelConfig.fields[idx].show=val;updateLabelPreview();}
+function lfSet(idx,prop,val){labelConfig.fields[idx][prop]=val;updateLabelPreview();}
+function lfToggleFmt(idx,prop){
+  labelConfig.fields[idx][prop]=!labelConfig.fields[idx][prop];
+  renderLfList();updateLabelPreview();
+}
+
+function updateLabelPreview(){
+  const cfg={
+    ...labelConfig,
+    widthMm:parseInt(document.getElementById('lcfg-w')?.value)||60,
+    heightMm:parseInt(document.getElementById('lcfg-h')?.value)||85,
+    qrSizePx:parseInt(document.getElementById('lcfg-qr')?.value)||90,
+    showQr:document.getElementById('lcfg-showqr')?.checked!==false,
+  };
+  const sampleRow=stockRecords[0]?.data||{};
+  const el=document.getElementById('lbl-preview-inner');
+  if(!el) return;
+  el.style.transform='scale(0.45)';
+  el.style.transformOrigin='top center';
+  el.innerHTML=renderLabelHtml(sampleRow,cfg,'lbl-prev-qr');
+  // Init QR in preview
+  setTimeout(()=>{
+    const qrEl=document.getElementById('lbl-prev-qr');
+    if(qrEl&&typeof QRCode!=='undefined'){
+      qrEl.innerHTML='';
+      const fields=(cfg.fields||[]).filter(f=>f.show!==false);
+      const qrData=fields.map(f=>sampleRow[f.key]||'').filter(Boolean).join('|');
+      try{new QRCode(qrEl,{text:qrData||'PREVIEW',width:cfg.qrSizePx||90,height:cfg.qrSizePx||90,correctLevel:0});}catch(_){}
+    }
+  },100);
+}
+
+function saveLabelCfg(){
+  labelConfig.widthMm=parseInt(document.getElementById('lcfg-w').value)||60;
+  labelConfig.heightMm=parseInt(document.getElementById('lcfg-h').value)||85;
+  labelConfig.qrSizePx=parseInt(document.getElementById('lcfg-qr').value)||90;
+  labelConfig.showQr=document.getElementById('lcfg-showqr').checked;
+  labelConfig.perPage=document.getElementById('lcfg-perpage').value;
+  // Fields already updated in-place via lfSet
+  closeLabelCfg();
+  if(typeof renderStocuri==='function') renderStocuri();
+  showToast('✓ Configurare etichetă salvată');
+}
+
+// ── Print Queue ──
+function addToQueue(rowJson){
+  let row;
+  try{row=typeof rowJson==='string'?JSON.parse(rowJson):rowJson;}catch(e){return;}
+  printQueue.push({...row, _addedAt:new Date().toLocaleTimeString('ro-RO')});
+  updateQueueBadge();
+  const name=row['ITEM NR']||row['ITEM NAME']||'Etichetă';
+  showToast(`🖨 "${name}" adăugat în coadă (${printQueue.length} total) — apasă FAB-ul pentru printare`,'ok',4000);
+}
+
+function updateQueueBadge(){
+  const n=printQueue.length;
+  const fab=document.getElementById('pq-fab');
+  const cnt=document.getElementById('pq-count');
+  if(fab) fab.style.display=n>0?'flex':'none';
+  if(cnt) cnt.textContent=n;
+  const mc=document.getElementById('pq-modal-count');if(mc) mc.textContent=n;
+}
+
+function openPrintQueue(){
+  document.getElementById('pq-overlay').style.display='flex';
+  renderPrintQueueModal();
+}
+function closePrintQueue(){document.getElementById('pq-overlay').style.display='none';}
+
+function renderPrintQueueModal(){
+  const list=document.getElementById('pq-items');
+  const empty=document.getElementById('pq-empty');
+  if(!list) return;
+  if(!printQueue.length){list.innerHTML='';empty.style.display='block';return;}
+  empty.style.display='none';
+  list.innerHTML=printQueue.map((row,i)=>`
+    <div class="pq-item">
+      <div class="pq-item-info">
+        <span style="font-weight:700">${row['ITEM NR']||'—'}</span>
+        <span style="color:var(--muted);font-size:.72rem;margin-left:8px">${row['ITEM NAME']||''}</span>
+        <span style="color:var(--dim);font-size:.68rem;margin-left:8px">Lot: ${row['LOTNR']||'—'}</span>
+        <span style="color:var(--dim);font-size:.65rem;margin-left:8px;font-family:normal">@ ${row._addedAt}</span>
+      </div>
+      <button class="btn-sm" style="border-color:rgba(239,83,80,.4);color:var(--warn)" onclick="removeFromQueue(${i})">✕</button>
+    </div>`).join('');
+}
+
+function removeFromQueue(idx){
+  printQueue.splice(idx,1);
+  updateQueueBadge();
+  renderPrintQueueModal();
+}
+function clearPrintQueue(){
+  if(!printQueue.length) return;
+  if(confirm('Golești coada de printare ('+printQueue.length+' etichete)?')){
+    printQueue=[];updateQueueBadge();renderPrintQueueModal();
+  }
+}
+
+function printAllLabels(){
+  if(!printQueue.length){alert('Coada e goală!');return;}
+  const cfg=labelConfig;
+
+  // Determine grid layout
+  const perPageMap={'3x1':{cols:1,rows:3},'3x1-wide':{cols:1,rows:3},'6x2':{cols:2,rows:3},'9x3':{cols:3,rows:3}};
+  const grid=perPageMap[cfg.perPage||'6x2']||{cols:2,rows:3};
+  const perPage=grid.cols*grid.rows;
+
+  // A4 usable: 190mm × 277mm (with 10mm margins)
+  const pageW=190,pageH=277;
+  const gap=3; // mm between labels
+  const lblW=(pageW-(grid.cols-1)*gap)/grid.cols;
+  const lblH=(pageH-(grid.rows-1)*gap)/grid.rows;
+  const useCfg={...cfg,widthMm:lblW,heightMm:lblH};
+
+  // Group labels into pages
+  const pages=[];
+  for(let i=0;i<printQueue.length;i+=perPage){
+    pages.push(printQueue.slice(i,i+perPage));
+  }
+
+  // Build print HTML
+  let labelIdx=0;
+  const pagesHtml=pages.map((page,pi)=>`
+    <div class="print-page" ${pi<pages.length-1?'style="page-break-after:always"':''}>
+      <div class="label-grid" style="display:grid;grid-template-columns:repeat(${grid.cols},${lblW}mm);gap:${gap}mm;width:${pageW}mm">
+        ${page.map(row=>{
+          const qid='pqr_'+labelIdx++;
+          return renderLabelHtml(row,useCfg,qid);
+        }).join('')}
+      </div>
+    </div>`).join('');
+
+  const win=window.open('','_blank','width=900,height=700');
+  if(!win){alert('Permite pop-up-uri pentru această pagină!');return;}
+
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>Etichete (${printQueue.length})</title>
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"><\\/script>
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{background:#f0f0f0;font-family:Arial,sans-serif}
+      .print-page{background:#fff;width:210mm;min-height:297mm;margin:10mm auto;padding:10mm;box-shadow:0 2px 10px rgba(0,0,0,.2)}
+      .lbl-unit{display:flex;flex-direction:column;background:#fff;color:#000}
+      .no-print{position:fixed;top:10px;right:10px;display:flex;gap:8px;z-index:999;background:rgba(255,255,255,.95);padding:10px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.2)}
+      .no-print button{padding:8px 16px;font-size:13px;cursor:pointer;border-radius:5px;border:1px solid #ccc}
+      .btn-print{background:#000;color:#fff;border-color:#000!important}
+      @media print{
+        body{background:#fff}
+        .print-page{margin:0;padding:10mm;box-shadow:none;page-break-after:always}
+        .print-page:last-child{page-break-after:avoid}
+        .no-print{display:none!important}
+        @page{size:A4 portrait;margin:0}
+      }
+    </style></head><body>
+    <div class="no-print">
+      <span style="font-size:12px;color:#666">${printQueue.length} etichete / ${pages.length} pagini</span>
+      <button class="btn-print" onclick="window.print()">🖨 Printează</button>
+      <button onclick="window.close()">✕ Închide</button>
+    </div>
+    ${pagesHtml}
+    <script>
+      // Init QR codes
+      document.querySelectorAll('[id^="pqr_"]').forEach(el=>{
+        const idx=parseInt(el.id.replace('pqr_',''));
+        const rows=${JSON.stringify(printQueue)};
+        const cfg=${JSON.stringify(cfg)};
+        if(!rows[idx]) return;
+        const fields=(cfg.fields||[]).filter(f=>f.show!==false);
+        const qrData=fields.map(f=>String(rows[idx][f.key]||'')).filter(Boolean).join('|');
+        try{new QRCode(el,{text:qrData||'N/A',width:Math.round(cfg.qrSizePx||90),height:Math.round(cfg.qrSizePx||90),correctLevel:0});}
+        catch(e){el.textContent='QR ERR';}
+      });
+    <\/script>
+    `);
+  win.document.close();
+}
+
+// ── Override printLabel to add to queue instead of immediate print ──
+function printLabel(rowJson){addToQueue(rowJson);}
+
 </script>
 </body>
 </html>
