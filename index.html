@@ -161,6 +161,17 @@ body{font-family:-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:
 .pq-box{background:var(--surf);border:1px solid var(--border);border-radius:var(--r) var(--r) 0 0;width:min(700px,96vw);max-height:70vh;overflow-y:auto;padding:16px;box-shadow:var(--sh)}
 .pq-item{display:flex;align-items:center;gap:10px;padding:6px 10px;background:var(--surf2);border-radius:6px;margin-bottom:5px;font-size:.78rem}
 .pq-item-info{flex:1;font-family:var(--mono)}
+
+/* ── 2-column Nesturi layout ── */
+.nest-cols{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+.nest-col-head{display:flex;align-items:center;gap:8px;padding:7px 11px;margin-bottom:8px;border-radius:7px;font-size:.78rem;font-weight:700;background:var(--surf);border:1px solid var(--border);position:sticky;top:0;z-index:10}
+.nest-col-head.l3030{border-color:rgba(0,212,160,.3);color:var(--l3030)}
+.nest-col-head.bodor{border-color:rgba(77,155,255,.3);color:var(--bodor)}
+/* Coli necesare edit */
+.nec-edit-inp{width:64px;height:26px;padding:2px 6px;text-align:center;font-size:.82rem;font-weight:700;border-radius:5px;border:1px solid var(--border2);background:var(--surf2);color:var(--text);outline:none;transition:border-color .15s}
+.nec-edit-inp:focus{border-color:var(--accent)}
+.nec-edit-inp.changed{border-color:var(--warn);background:rgba(239,83,80,.06);color:var(--warn)}
+.part-total-badge{font-family:var(--mono);font-size:.8rem;font-weight:700;color:var(--ok);background:rgba(38,198,106,.08);border:1px solid rgba(38,198,106,.2);border-radius:4px;padding:1px 6px}
 .sched-inp{background:var(--surf3);border:1px solid var(--border2);border-radius:5px;
   padding:3px 8px;color:var(--accent);font-size:.72rem;font-family:var(--mono);outline:none;
   width:96px;transition:border-color .15s;letter-spacing:.04em;}
@@ -1195,28 +1206,25 @@ async function parseL3030PDF(pdf, filename){
 /* ══ Nesturi ══ */
 function setNestFilter(f){nestFilter=f;['all','l3030','bodor'].forEach(x=>document.getElementById('fn-'+x)?.classList.toggle('active',x===f));renderNesturi();}
 function renderNesturi(){
-  const container=document.getElementById('cards');container.innerHTML='';
+  const container=document.getElementById('cards');
 
-  // ── Toolbar: storage bar + sort (render once into dedicated div, avoid duplicates) ──
+  // Toolbar (singleton)
   let toolbar=document.getElementById('nesturi-toolbar');
   if(!toolbar){
     toolbar=document.createElement('div');toolbar.id='nesturi-toolbar';
     container.parentNode.insertBefore(toolbar,container);
   }
   const sortOptions=[
-    {v:'priority',l:'⭐ Prioritate'},
-    {v:'newest',l:'🕐 Cele mai noi'},
-    {v:'oldest',l:'🕐 Cele mai vechi'},
-    {v:'sheet',l:'📦 Tablă consumată'},
-    {v:'machine',l:'🔧 Mașină'},
+    {v:'priority',l:'⭐ Prioritate'},{v:'newest',l:'🕐 Cele mai noi'},
+    {v:'oldest',l:'🕐 Cele mai vechi'},{v:'sheet',l:'📦 Tablă consumată'},
   ];
   toolbar.innerHTML=`
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;padding:8px 12px;background:var(--surf);border:1px solid var(--border);border-radius:8px;font-size:.72rem">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;padding:7px 11px;background:var(--surf);border:1px solid var(--border);border-radius:8px;font-size:.72rem">
       <span style="color:var(--muted);white-space:nowrap">💾 Storage:</span>
-      <div style="flex:1;height:6px;background:var(--surf3);border-radius:3px;overflow:hidden">
+      <div style="flex:1;height:5px;background:var(--surf3);border-radius:3px;overflow:hidden">
         <div id="storage-bar-fill" style="height:100%;width:0%;border-radius:3px;background:var(--ok);transition:width .5s"></div>
       </div>
-      <span id="storage-bar-lbl" style="color:var(--dim);white-space:nowrap;font-size:.68rem">se calculează…</span>
+      <span id="storage-bar-lbl" style="color:var(--dim);white-space:nowrap;font-size:.67rem">—</span>
     </div>
     <div class="filter-bar" style="margin-bottom:8px">
       <span class="lbl">Ordonare:</span>
@@ -1224,27 +1232,41 @@ function renderNesturi(){
     </div>`;
   updateStorageBar();
 
-  // Filter + group by source
-  const base=nestFilter==='all'?[...allPrograms]:[...allPrograms.filter(p=>p.type===nestFilter)];
-  const sorted=sortNests(base);
+  // Filter
+  const isAdmin=typeof canManageUsers==='function'&&canManageUsers();
+  const all=nestFilter==='all'?[...allPrograms]:[...allPrograms.filter(p=>p.type===nestFilter)];
+  const l3030Sorted=sortNests(all.filter(p=>p.type==='l3030'));
+  const bodorSorted=sortNests(all.filter(p=>p.type==='bodor'));
 
-  // Debug: arată ce e în allPrograms
-  console.log('[NV] renderNesturi: allPrograms=',allPrograms.length,'sorted=',sorted.length,
-    'sample=',allPrograms[0]?JSON.stringify({src:allPrograms[0].source,prog:allPrograms[0].programName,type:allPrograms[0].type}):'EMPTY');
+  console.log('[NV] renderNesturi: allPrograms=',allPrograms.length,'sorted=',l3030Sorted.length+bodorSorted.length,'sample=',allPrograms[0]?JSON.stringify({src:allPrograms[0].source,prog:allPrograms[0].programName,type:allPrograms[0].type}):'EMPTY');
 
-  if(!sorted.length){
-    if(allPrograms.length){
-      container.innerHTML='<div class="empty-state"><div class="ei">🔍</div><div class="et">Niciun nest pentru filtrul selectat.</div></div>';
-    } else {
-      container.innerHTML='<div class="empty-state"><div class="ei">📂</div><div class="et">Trage fișiere HTML/PDF sau apasă Selectează.</div></div>';
-    }
+  if(!all.length){
+    container.innerHTML=allPrograms.length
+      ? '<div class="empty-state"><div class="ei">🔍</div><div class="et">Niciun nest pentru filtrul selectat.</div></div>'
+      : '<div class="empty-state"><div class="ei">📂</div><div class="et">Trage fișiere HTML/PDF sau apasă Selectează.</div></div>';
     return;
   }
-  sorted.forEach(p=>renderCard(p,container));
-  // Actualizează contorul cu numărul de carduri efectiv redate
-  const actualCards=container.querySelectorAll('.card').length;
+
+  // 2-column layout
+  container.innerHTML=`<div class="nest-cols">
+    <div>
+      <div class="nest-col-head l3030"><span>⚡ L3030</span><span style="font-size:.68rem;font-weight:400;color:var(--muted)">${l3030Sorted.length} progr. · ${l3030Sorted.reduce((s,p)=>s+effectiveNec(p),0)} coli</span></div>
+      <div id="col-l3030"></div>
+    </div>
+    <div>
+      <div class="nest-col-head bodor"><span>🔵 Bodor</span><span style="font-size:.68rem;font-weight:400;color:var(--muted)">${bodorSorted.length} progr. · ${bodorSorted.reduce((s,p)=>s+effectiveNec(p),0)} coli</span></div>
+      <div id="col-bodor"></div>
+    </div>
+  </div>`;
+
+  const colL=document.getElementById('col-l3030');
+  const colB=document.getElementById('col-bodor');
+  l3030Sorted.forEach(p=>renderCard(p,colL,isAdmin));
+  bodorSorted.forEach(p=>renderCard(p,colB,isAdmin));
+
+  // Actualizează contorul
   const srcBadge=document.getElementById('tc-nesturi');
-  if(srcBadge) srcBadge.textContent=new Set(sorted.map(p=>p.source)).size;
+  if(srcBadge) srcBadge.textContent=new Set(all.map(p=>p.source)).size;
 }
 
 function setNestSort(v){nestSort=v;renderNesturi();}
@@ -1301,59 +1323,92 @@ function getStatColor(type){const colors={CTC:'background:rgba(240,160,0,.12);co
 function formatTime(ts){return new Date(ts).toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 
 /* ══ RENDER CARD ══ */
-function renderCard(data,container){
-  if(!data||typeof data!=='object'){console.warn('[NV] renderCard: invalid data',data);return;}
-  // Log primele 3 carduri pentru debugging
+function renderCard(data,container,isAdmin){
+  if(!data||typeof data!=='object') return;
   if((container?.children?.length||0)<3){
     console.log('[NV] renderCard:',{programName:data.programName,type:data.type,source:data.source,hasParts:Array.isArray(data.parts)});
   }
   const isL=data.type==='l3030';
   const prog=data.programName||data.result||data.job_name||data.source||'Program';
   const parts=Array.isArray(data.parts)?data.parts:[];
-  const rpt=isL?(data.rpt||'1'):(data.numOfSheet||0);
-  const hasImg=parts.some(x=>x.imageDataUrl||x.imageUrl);
-  const thumb=data.thumbnailUrl||data.thumbnail;
-  const extraCells=isL
-    ?`<div class="ic"><div class="lbl">Fișier sursă</div><div class="val mono" style="font-size:.71rem;color:var(--muted)">${data.source}</div></div>`
-    :`<div class="ic"><div class="lbl">PlateNum</div><div class="val mono">${data.plateNum||'—'}</div></div><div class="ic"><div class="lbl">JobNum</div><div class="val mono">${data.jobNum||'—'}</div></div>`;
+  const origNec=data.numOfSheet||parseInt(data.rpt)||1;
+  const currentNec=effectiveNec(data);
+  const multiplier=origNec>0?currentNec/origNec:1;
+  const thumb=null; // thumbnail eliminat
+  const sn=getSchedNo(data.source);
+  const prio=getPriority(data.source);
+  const ok=opKey(data);
+
+  // Parts section with per-sheet count + total quantity
   let partsHTML='';
   if(parts.length){
-    const rows=parts.map((x,i)=>{
-      const imgSrc=x.imageUrl||x.imageDataUrl;
-      return `<tr><td class="row-num">${i+1}</td>
-        ${hasImg?`<td class="img-cell">${imgSrc?`<img src="${imgSrc}" loading="lazy" alt="${x.alias}">`:'<span style="color:var(--dim);font-size:.71rem">—</span>'}</td>`:''}
-        <td class="alias-cell">${x.alias}</td><td><span class="pcs-pill">${x.pcs}</span></td>
-      </tr>`;
-    }).join('');
-    partsHTML=`<div class="sec-hd">${parts.length} ${parts.length===1?'tip piesă':'tipuri piese'}</div>
-    <div class="parts-wrap"><table class="pt"><thead><tr><th>#</th>${hasImg?'<th>Imagine</th>':''}<th>Alias</th><th>Buc.</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    const hasImg=parts.some(x=>x.imageDataUrl||x.imageUrl);
+    if(hasImg){
+      partsHTML=`<div class="sec-hd" style="margin-top:8px">Piese (${parts.length}) · <span style="color:var(--ok);font-weight:700">${parts.reduce((s,x)=>s+Math.round((x.pcs||0)*multiplier),0)} buc total</span></div>
+        <div class="parts-grid" id="pg_${safeId(ok)}">${parts.map((x,i)=>{
+          const imgSrc=x.imageUrl||x.imageDataUrl;
+          const total=Math.round((x.pcs||0)*multiplier);
+          return `<div class="part-thumb ${imgSrc?'':'no-img'}">
+            ${imgSrc?`<img src="${imgSrc}" loading="lazy" alt="${x.alias}">`:'<div class="no-img-ico">✂</div>'}
+            <div class="pa">${esc(x.alias||'')}</div>
+            <div class="pp"><span class="part-qty-total" data-pcs="${x.pcs||0}">${total}</span> buc.</div>
+          </div>`;
+        }).join('')}</div>`;
+    } else {
+      const totalBuc=parts.reduce((s,x)=>s+Math.round((x.pcs||0)*multiplier),0);
+      const rows=parts.map((x,i)=>`<tr>
+        <td style="color:var(--dim);font-size:.69rem;padding:4px 8px">${i+1}</td>
+        <td style="font-family:var(--mono);font-size:.73rem;padding:4px 8px">${esc(x.alias||'')}</td>
+        <td style="padding:4px 8px"><span class="pcs-pill">${x.pcs||0}</span><span style="font-size:.6rem;color:var(--dim)">/col.</span></td>
+        <td style="padding:4px 8px"><span class="part-qty-total part-total-badge" data-pcs="${x.pcs||0}">${Math.round((x.pcs||0)*multiplier)}</span></td>
+      </tr>`).join('');
+      partsHTML=`<div class="sec-hd" style="margin-top:8px">Piese (${parts.length}) · <span style="color:var(--ok);font-weight:700" class="card-total-buc" id="ctb_${safeId(ok)}">${totalBuc} buc total</span></div>
+        <div class="parts-wrap"><table class="pt" id="pg_${safeId(ok)}"><thead><tr><th>#</th><th>Alias</th><th>/coală</th><th>Total</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
   }
-  const thumbHTML=''; // Thumbnail eliminat conform cerinței
-  const sn=getSchedNo(data.source);
+
+  const extraCells=isL
+    ?`<div class="ic"><div class="lbl">Fișier sursă</div><div class="val mono" style="font-size:.7rem;color:var(--muted)">${esc(data.source||'')}</div></div>`
+    :`<div class="ic"><div class="lbl">PlateNum</div><div class="val mono">${esc(data.plateNum||'—')}</div></div>`;
+
+  // Editable Coli Necesare (admin only)
+  const necEditHtml=isAdmin?`
+    <div class="ic"><div class="lbl">Coli necesare <span style="font-size:.6rem;color:var(--warn)">✎ editabil</span></div>
+    <div class="val" style="display:flex;align-items:center;gap:8px">
+      <input type="number" class="nec-edit-inp ${currentNec!==origNec?'changed':''}" min="1" max="9999"
+        value="${currentNec}" data-orig="${origNec}" data-ok="${ok.replace(/"/g,'&quot;')}"
+        oninput="cardNecInput(this)" onclick="event.stopPropagation()">
+      <span style="font-size:.7rem;color:var(--muted)">orig: ${origNec}</span>
+      ${currentNec!==origNec?`<span style="font-size:.68rem;color:var(--warn)">× ${(multiplier).toFixed(2)}</span>`:''}
+    </div></div>`:
+    `<div class="ic"><div class="lbl">Coli necesare</div><div class="val"><strong>${currentNec}</strong></div></div>`;
+
   const div=document.createElement('div');div.className='card open';
   div.innerHTML=`<div class="card-head" onclick="this.closest('.card').classList.toggle('open')">
-    <span class="mbadge ${isL?'mb-l':'mb-b'}">${isL?'⚡ L3030':'🔵 Bodor'}</span>
-    ${sn?`<span style="font-family:var(--mono);font-size:.7rem;color:var(--accent);background:rgba(240,160,0,.08);border:1px solid rgba(240,160,0,.3);border-radius:5px;padding:2px 7px;flex-shrink:0">📋 ${esc(sn)}</span>`:''}
-    <span class="card-prog">${prog}</span>
-    <span class="card-pill">${displaySheet(data.sheetMaterial)}</span>
-    <span onclick="event.stopPropagation()" title="Prioritate nest (1=primul)" style="display:flex;align-items:center;gap:3px;flex-shrink:0;order:-1">
-      <input class="prio-inp" type="number" min="1" max="999" value="${getPriority(data.source)||''}" placeholder="P"
+    <span onclick="event.stopPropagation()" title="Prioritate (1=primul)" style="display:flex;align-items:center;flex-shrink:0;order:-1">
+      <input class="prio-inp" type="number" min="1" max="999" value="${prio||''}" placeholder="P"
         oninput="setPriority('${esc(data.source)}',this.value)" onclick="event.stopPropagation()"
-        style="width:52px;height:32px;font-size:1rem;font-weight:700;text-align:center;border-radius:6px;border:2px solid ${getPriority(data.source)?'var(--accent)':'var(--border2)'};background:${getPriority(data.source)?'rgba(240,160,0,.1)':'var(--surf3)'};color:${getPriority(data.source)?'var(--accent)':'var(--dim)'}">
+        style="width:48px;height:30px;font-size:.95rem;font-weight:700;text-align:center;border-radius:6px;border:2px solid ${prio?'var(--accent)':'var(--border2)'};background:${prio?'rgba(240,160,0,.1)':'var(--surf3)'};color:${prio?'var(--accent)':'var(--dim)'}">
     </span>
+    <span class="mbadge ${isL?'mb-l':'mb-b'}">${isL?'⚡':'🔵'}</span>
+    ${sn?`<span style="font-family:var(--mono);font-size:.69rem;color:var(--accent);background:rgba(240,160,0,.08);border:1px solid rgba(240,160,0,.3);border-radius:5px;padding:2px 6px;flex-shrink:0">📋 ${esc(sn)}</span>`:''}
+    <span class="card-prog">${esc(prog)}</span>
+    <span class="card-pill">${displaySheet(data.sheetMaterial)}</span>
     <button class="card-del" onclick="event.stopPropagation();deleteNest('${esc(data.source)}')" title="Șterge">🗑</button>
-    <span class="card-rpt"><strong>${rpt}</strong> coli</span>
+    <span class="card-rpt"><strong id="cnec_${safeId(ok)}">${currentNec}</strong> coli · <strong style="color:var(--ok)">${parts.reduce((s,x)=>s+Math.round((x.pcs||0)*multiplier),0)}</strong> buc</span>
     <span class="chevron">▾</span></div>
   <div class="card-body">
     <div class="info-row">
-      <div class="ic"><div class="lbl">Mașină</div><div class="val">${data.machine}</div></div>
+      <div class="ic"><div class="lbl">Mașină</div><div class="val">${esc(data.machine||'')}</div></div>
       <div class="ic"><div class="lbl">Schedule No.</div><div class="val" style="display:flex;gap:5px;align-items:center">
-        <input class="sched-inp" data-src="${esc(data.source)}" value="${esc(getSchedNo(data.source))}" placeholder="035602…" style="width:110px" oninput="scheduleInput(this,'${esc(data.source)}')" onclick="event.stopPropagation()">
+        <input class="sched-inp" data-src="${esc(data.source)}" value="${esc(getSchedNo(data.source))}"
+               placeholder="035602…" style="width:110px" oninput="scheduleInput(this,'${esc(data.source)}')"
+               onclick="event.stopPropagation()">
       </div></div>
-      <div class="ic"><div class="lbl">Program / Result</div><div class="val mono">${prog}</div></div>
+      <div class="ic"><div class="lbl">Program / Result</div><div class="val mono">${esc(prog)}</div></div>
       <div class="ic"><div class="lbl">Format tablă</div><div class="val mono">${displaySheet(data.sheetMaterial)}</div></div>
-      <div class="ic"><div class="lbl">Nr. coli</div><div class="val">${rpt}</div></div>${extraCells}
-    </div>${partsHTML}${thumbHTML}
+      ${necEditHtml}${extraCells}
+    </div>${partsHTML}
   </div>`;
   container.appendChild(div);
 }
@@ -3116,13 +3171,67 @@ function printAllLabels(){
         wrap.appendChild(pgDiv);
       }
     });
-    <\/script></body></html>`);
+    <\/script>`);
   win.document.close();
 }
 
 // ── Override printLabel to add to queue instead of immediate print ──
 function printLabel(rowJson){addToQueue(rowJson);}
 
+</script>
+
+
+
+<script>
+/* ══ COLI NECESARE EDITABILE — card Nesturi ══ */
+
+function cardNecInput(el){
+  const ok=el.dataset.ok;
+  const orig=parseInt(el.dataset.orig)||1;
+  const newNec=parseInt(el.value)||orig;
+  const multiplier=newNec/orig;
+
+  if(!opData[ok]) opData[ok]={coliDebitate:'',motivDepasire:'',completedAt:null,numOfSheetOverride:null};
+  opData[ok].numOfSheetOverride=(newNec!==orig)?newNec:null;
+
+  // Mark input as changed
+  el.classList.toggle('changed', newNec!==orig);
+
+  // Update parts totals in this card
+  const card=el.closest('.card');
+  if(!card) return;
+
+  // Update all part-qty-total spans
+  card.querySelectorAll('.part-qty-total').forEach(span=>{
+    const pcs=parseInt(span.dataset.pcs)||0;
+    span.textContent=Math.round(pcs*multiplier);
+  });
+
+  // Update card header count
+  const okId=ok.replace(/[^a-zA-Z0-9]/g,'_');
+  const cnec=card.querySelector('[id^="cnec_"]');
+  if(cnec) cnec.textContent=newNec;
+
+  // Update total buc in header
+  let totalBuc=0;
+  card.querySelectorAll('.part-qty-total').forEach(span=>{totalBuc+=parseInt(span.textContent)||0;});
+  const rptEl=card.querySelector('.card-rpt');
+  if(rptEl){
+    const strongs=rptEl.querySelectorAll('strong');
+    if(strongs[0]) strongs[0].textContent=newNec;
+    if(strongs[1]) strongs[1].textContent=totalBuc;
+  }
+
+  // Update total in parts section
+  const ctb=card.querySelector('[id^="ctb_"]');
+  if(ctb) ctb.textContent=totalBuc+' buc total';
+
+  // Save to Supabase
+  if(typeof saveOpToSupabase==='function') saveOpToSupabase(ok);
+  // Update picking and raportare
+  if(typeof renderPicking==='function'&&activeTab==='picking') renderPicking();
+  if(typeof renderRaportare==='function'&&activeTab==='raportare') renderRaportare();
+}
 </script>
 </body>
 </html>
