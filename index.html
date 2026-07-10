@@ -385,6 +385,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
 </head>
 <body>
@@ -1023,7 +1024,12 @@ function parseL3030(html,filename){
   for(const t of doc.querySelectorAll('table.data')){const inTable=t.querySelector('table.inTable');if(!inTable) continue;const outerTds=Array.from(t.querySelectorAll('td')).filter(td=>!td.closest('table.inTable'));let progName=null,foundLabel=false;const SKIP=['Rpt:','Waste:','Duration:','Number of parts:','Manufacturing order:'];for(const td of outerTds){const text=td.textContent.replace(/\s+/,' ').trim();if(text==='Main program:'){foundLabel=true;continue;}if(foundLabel&&text&&!SKIP.includes(text)){progName=text;break;}}if(!progName) continue;const parts=[];let hd=false;for(const row of inTable.querySelectorAll('tr')){if(row.querySelectorAll('th').length){hd=true;continue;}if(!hd) continue;const tds2=row.querySelectorAll('td');if(tds2.length>=4){const alias=tds2[1].textContent.trim();const pcs=parseInt(tds2[3].textContent.trim())||0;if(alias) parts.push({alias,pcs,geoFile:geoMap[alias]?.geoFile||null,drawingName:geoMap[alias]?.drawingName||'',imageDataUrl:null});}}programParts[progName]=parts;}
   return programs.map(p=>({type:'l3030',machine,source:filename,nestName,programName:p.mp,rpt:p.rpt,sheetMaterial:fmtSheetL3030(p.mat),numOfSheet:parseInt(p.rpt)||1,parts:programParts[p.mp]||[]}));
 }
-function fmtSheetL3030(raw){const m=raw.match(/([\d.]+)\s*x\s*([\d.]+)\s*x\s*([\d.]+)/);if(!m) return raw;return `${m[1]}x${m[2]}x${m[3]}mm`;}
+function fmtSheetL3030(raw){
+  if(!raw) return '';
+  const m=raw.match(/([\d][\d.,]*)\s*[xX]\s*([\d][\d.]*)\s*[xX]\s*([\d][\d.]*)/);
+  if(!m) return raw.trim().split(/\s+/).slice(0,4).join(' ');
+  return m[1]+'x'+m[2]+'x'+m[3]+'mm';
+}
 
 /* ══ Bodor PDF ══ */
 async function handlePDF(file){
@@ -1051,12 +1057,43 @@ async function parseBodorPDF(pdf){const machine='Bodor';let jobNum='';const resu
 async function parseL3030PDF(pdf, filename){
   const page=await pdf.getPage(1);
   const tc=await page.getTextContent();
-  const rows=groupRows(tc.items);
+  let rows=groupRows(tc.items);
+
+  // ── OCR FALLBACK: PDF creat cu Nitro/printer virtual (text ca imagini) ──
+  const allText=tc.items.map(i=>i.str||'').join('').trim();
+  if(allText.length < 30 && typeof Tesseract!=='undefined'){
+    console.log('[NV] PDF fără text extractibil — activez OCR Tesseract...');
+    try{
+      let ocrText='';
+      const nPages=Math.min(pdf.numPages, 2);
+      for(let p=1;p<=nPages;p++){
+        const pg=await pdf.getPage(p);
+        const vp=pg.getViewport({scale:2.0});
+        const cvs=document.createElement('canvas');
+        cvs.width=vp.width;cvs.height=vp.height;
+        const ctx=cvs.getContext('2d');
+        await pg.render({canvasContext:ctx,viewport:vp}).promise;
+        const worker=await Tesseract.createWorker('eng',1,{logger:()=>{}});
+        const{data:{text}}=await worker.recognize(cvs);
+        await worker.terminate();
+        ocrText+=text+'\n';
+      }
+      console.log('[NV] OCR complet, chars:',ocrText.length);
+      // Construiește rows din textul OCR
+      rows=ocrText.split('\n').filter(l=>l.trim()).map(line=>({
+        text:line,
+        rawText:line.toLowerCase().replace(/\s+/g,''),
+        items:[{str:line}]
+      }));
+    }catch(ocrErr){
+      console.warn('[NV] OCR error:',ocrErr.message);
+    }
+  }
 
   // Titlu: "Production package for TruLaser 3030 (L3030) : R12733"
   // Folosim rawText (concatenare directă fără spații) pentru detecție robustă
   const titleRow=rows.find(r=>r.rawText?.includes('productionpackagefortrulaser'));
-  if(!titleRow) return [];
+  if(!titleRow){console.warn('[NV] Titlu L3030 negăsit în PDF');return [];}
   // Pentru job name: extrage din șirul original cu join simplu (păstrăm case-ul)
   const rawJoined=titleRow.items.map(i=>i.str).join('');
   const titleM=rawJoined.match(/Production package for\s*(.+?)\s*:\s*(\S+)/i)
