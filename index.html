@@ -957,14 +957,23 @@ function schedNr(src){return getSchedNo(src);}
 function getPriority(src){return parseInt(scheduleData[src]?.priority)||0;}
 function scheduleInput(el,src){
   ensureSchedule(src);scheduleData[src].schedNo=el.value;
+  // Sincronizează alte inputuri cu același src, FĂRĂ re-render (păstrăm focus)
   document.querySelectorAll('.sched-inp[data-src]').forEach(i=>{if(i!==el&&i.dataset.src===src) i.value=el.value;});
-  if(typeof renderPicking==='function'&&activeTab==='picking') renderPicking();
-  if(typeof renderRaportare==='function'&&activeTab==='raportare') renderRaportare();
+  // NU re-render aici — inputul rămâne focusat. Re-render la blur.
 }
+let _prioTimer=null;
 function setPriority(src,val){
   ensureSchedule(src);scheduleData[src].priority=parseInt(val)||0;
-  if(typeof renderPicking==='function'&&activeTab==='picking') renderPicking();
-  if(typeof renderRaportare==='function'&&activeTab==='raportare') renderRaportare();
+  // Debounce re-render: doar după ce utilizatorul termină de tastat
+  clearTimeout(_prioTimer);
+  _prioTimer=setTimeout(()=>{
+    const active=document.activeElement;
+    // Nu re-renderăm dacă utilizatorul încă scrie într-un input
+    if(active&&(active.classList.contains('prio-inp')||active.tagName==='INPUT')) return;
+    if(typeof renderNesturi==='function'&&activeTab==='nesturi') renderNesturi();
+    if(typeof renderPicking==='function'&&activeTab==='picking') renderPicking();
+    if(typeof renderRaportare==='function'&&activeTab==='raportare') renderRaportare();
+  },800);
 }
 let schedQueue=[];
 function showNextSchedPrompt(){
@@ -1011,6 +1020,8 @@ function onLoaded(programs){
   // Pre-render imediat după import (fără să aștepte promptul Schedule No.)
   if(typeof renderNesturi==='function') renderNesturi();
   updateTabCounts();
+  // Verifică formate de tablă nedetectate → prompt manual
+  if(typeof checkUnknownSheets==='function') checkUnknownSheets(programs);
   if(schedQueue.length===newSrc.length) showNextSchedPrompt();
 }
 function doPostLoadRender(){
@@ -1066,10 +1077,19 @@ function parseL3030(html,filename){
   return programs.map(p=>({type:'l3030',machine,source:filename,nestName,programName:p.mp,rpt:p.rpt,sheetMaterial:fmtSheetL3030(p.mat),numOfSheet:parseInt(p.rpt)||1,parts:programParts[p.mp]||[]}));
 }
 function fmtSheetL3030(raw){
-  if(!raw) return '';
-  const m=raw.match(/([\d][\d.,]*)\s*[xX]\s*([\d][\d.]*)\s*[xX]\s*([\d][\d.]*)/);
-  if(!m) return raw.trim().split(/\s+/).slice(0,4).join(' ');
-  return m[1]+'x'+m[2]+'x'+m[3]+'mm';
+  if(!raw) return '?';
+  // Regex inteligent: L(3-4 cifre) x W(3-4 cifre) x T(1-3 cifre, max 2 zecimale)
+  // Evită prefixele de material (St37-40, 1.4301-20) și numerele care urmează (greutate)
+  const re=/(\d{3,4}(?:\.\d{1,2})?)\s*[xX×]\s*(\d{3,4}(?:\.\d{1,2})?)\s*[xX×]\s*(\d{1,3}(?:\.\d{1,2})?)/g;
+  let m;
+  while((m=re.exec(raw))!==null){
+    const L=parseFloat(m[1]),W=parseFloat(m[2]),T=parseFloat(m[3]);
+    // Plauzibilitate: L,W ∈ [100,6000]mm, T ∈ [0.3,100]mm
+    if(L>=100&&L<=6000&&W>=100&&W<=6000&&T>=0.3&&T<=100){
+      return m[1]+'x'+m[2]+'x'+m[3]+'mm';
+    }
+  }
+  return '?'; // dimensiuni negăsite → va declanșa promptul manual
 }
 
 /* ══ Bodor PDF ══ */
@@ -1152,7 +1172,7 @@ async function parseL3030PDF(pdf, filename){
     if(row.rawText?.startsWith('mainprogram')) continue; // header
     const m=row.text.match(/^(\S+)\s+(\d+)\s+/);
     if(!m) continue;
-    programs.push({name:m[1],rpt:parseInt(m[2]),sheetMaterial:fmtSheetL3030(row.text)});
+    programs.push({name:m[1],rpt:parseInt(m[2]),sheetMaterial:fmtSheetL3030(row.text),_rawSheetText:row.text});
   }
   if(!programs.length) return [];
 
@@ -1575,7 +1595,8 @@ function pkRes(el){
   const s=document.getElementById('pks-'+safeId(key));if(s) s.innerHTML=statusBadge(need,el.value);
   const dtEl=document.getElementById('pkdt-'+safeId(key));if(dtEl) dtEl.textContent=fmtReservedAt(pickingData[key].reservedAt);
   const smEl=document.getElementById('pksm-'+safeId(key));if(smEl) smEl.textContent='';
-  renderPicking();
+  // Re-render la blur, nu în timpul tastării (păstrează focus)
+  el.addEventListener('blur',()=>renderPicking(),{once:true});
 }
 function surplusConfirm(){
   const reason=document.getElementById('surplus-reason').value.trim();
@@ -1888,10 +1909,26 @@ function stockSortBy(col){
   else{stockSort.col=col;stockSort.asc=true;}
   if(typeof renderStocuri==='function') renderStocuri();
 }
+let _stockFilterTimer=null;
 function stockFilterChange(col,val){
   if(val) stockFilters[col]=val.toLowerCase();
   else delete stockFilters[col];
-  if(typeof renderStocuri==='function') renderStocuri();
+  // Debounce: re-render după 400ms de pauză în tastare + păstrează focus
+  clearTimeout(_stockFilterTimer);
+  _stockFilterTimer=setTimeout(()=>{
+    const active=document.activeElement;
+    const activeCol=active?.dataset?.filterCol;
+    const cursorPos=active?.selectionStart;
+    if(typeof renderStocuri==='function') renderStocuri();
+    // Restaurează focus pe același input
+    if(activeCol){
+      const newInp=document.querySelector(`input[data-filter-col="${CSS.escape(activeCol)}"]`);
+      if(newInp){
+        newInp.focus();
+        try{newInp.setSelectionRange(cursorPos,cursorPos);}catch(_){}
+      }
+    }
+  },400);
 }
 function setStockFontSize(v){
   stockFontSize=parseInt(v)||13;
@@ -2684,7 +2721,7 @@ function renderStocuri(){
         <span>${esc(col)}</span><span style="color:var(--dim)">${si}</span>
       </div>
       <div style="padding:0 4px 4px">
-        <input type="text" value="${esc(fval)}" placeholder="Filtrează…" style="width:100%;background:var(--surf3);border:1px solid var(--border);border-radius:4px;padding:2px 5px;font-size:.65rem;color:var(--text);outline:none"
+        <input type="text" value="${esc(fval)}" data-filter-col="${esc(col)}" placeholder="Filtrează…" style="width:100%;background:var(--surf3);border:1px solid var(--border);border-radius:4px;padding:2px 5px;font-size:.65rem;color:var(--text);outline:none"
           oninput="stockFilterChange('${esc(col)}',this.value)">
       </div>
     </div>`;
@@ -3308,9 +3345,11 @@ function cardNecInput(el){
 
   // Save to Supabase
   if(typeof saveOpToSupabase==='function') saveOpToSupabase(ok);
-  // Update picking and raportare
-  if(typeof renderPicking==='function'&&activeTab==='picking') renderPicking();
-  if(typeof renderRaportare==='function'&&activeTab==='raportare') renderRaportare();
+  // Re-render alte taburi la blur (nu în timpul tastării)
+  el.addEventListener('blur',()=>{
+    if(typeof renderPicking==='function'&&activeTab==='picking') renderPicking();
+    if(typeof renderRaportare==='function'&&activeTab==='raportare') renderRaportare();
+  },{once:true});
 }
 </script>
 
@@ -3599,5 +3638,91 @@ function rapMachineChange(v){rapMachine=v;renderRaportare();}
 function rapFormatChange(v){rapFormat=v;renderRaportare();}
 function rapSetSort(col){if(rapSort.col===col) rapSort.asc=!rapSort.asc;else{rapSort.col=col;rapSort.asc=true;}renderRaportare();}
 </script>
+<!-- ══ MANUAL SHEET DIMS MODAL ══ -->
+<div id="sheet-dims-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:3500;display:none;align-items:center;justify-content:center;padding:16px">
+  <div style="background:var(--surf);border:1px solid var(--border);border-radius:var(--r);width:min(440px,94vw);padding:20px;box-shadow:var(--sh)">
+    <h3 style="margin:0 0 6px;font-size:.95rem">📐 Dimensiuni tablă necunoscute</h3>
+    <p style="font-size:.78rem;color:var(--muted);margin-bottom:4px">Programul <strong id="sd-prog" style="color:var(--accent)"></strong> nu are format de tablă detectabil.</p>
+    <p style="font-size:.72rem;color:var(--dim);margin-bottom:14px">Text extras: <span id="sd-raw" style="font-family:var(--mono)"></span></p>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">
+      <div>
+        <label style="font-size:.7rem;color:var(--muted);display:block;margin-bottom:4px">Lungime (mm)</label>
+        <input type="number" id="sd-len" class="pk-input qty" style="width:100%" placeholder="2500" min="100" max="6000">
+      </div>
+      <div>
+        <label style="font-size:.7rem;color:var(--muted);display:block;margin-bottom:4px">Lățime (mm)</label>
+        <input type="number" id="sd-wid" class="pk-input qty" style="width:100%" placeholder="1250" min="100" max="6000">
+      </div>
+      <div>
+        <label style="font-size:.7rem;color:var(--muted);display:block;margin-bottom:4px">Grosime (mm)</label>
+        <input type="number" id="sd-thk" class="pk-input qty" style="width:100%" placeholder="4.00" min="0.3" max="100" step="0.01">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn-sm btn-cancel-def" onclick="sheetDimsCancel()">Anulează</button>
+      <button class="auth-btn" style="max-width:140px;padding:8px 16px;font-size:.8rem" onclick="sheetDimsConfirm()">✓ Confirmă</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ══ PROMPT MANUAL DIMENSIUNI TABLĂ ══ */
+let sheetDimsQueue=[]; // [{source, programName, rawText}]
+
+function checkUnknownSheets(programs){
+  // Colectează programele cu sheetMaterial='?' și cere dimensiuni
+  const unknown=programs.filter(p=>!p.sheetMaterial||p.sheetMaterial==='?'||p.sheetMaterial==='');
+  if(!unknown.length) return;
+  unknown.forEach(p=>{
+    sheetDimsQueue.push({source:p.source,programName:p.programName,rawText:p._rawSheetText||''});
+  });
+  showNextSheetDimsPrompt();
+}
+
+function showNextSheetDimsPrompt(){
+  if(!sheetDimsQueue.length) return;
+  const item=sheetDimsQueue[0];
+  document.getElementById('sd-prog').textContent=item.programName||item.source;
+  document.getElementById('sd-raw').textContent=item.rawText?item.rawText.slice(0,60):'(gol)';
+  document.getElementById('sd-len').value='';
+  document.getElementById('sd-wid').value='';
+  document.getElementById('sd-thk').value='';
+  document.getElementById('sheet-dims-modal').style.display='flex';
+  setTimeout(()=>document.getElementById('sd-len').focus(),80);
+}
+
+function sheetDimsConfirm(){
+  const item=sheetDimsQueue.shift();
+  const len=parseFloat(document.getElementById('sd-len').value);
+  const wid=parseFloat(document.getElementById('sd-wid').value);
+  const thk=parseFloat(document.getElementById('sd-thk').value);
+  document.getElementById('sheet-dims-modal').style.display='none';
+  if(item&&len&&wid&&thk){
+    const sheetStr=len+'x'+wid+'x'+thk+'mm';
+    // Aplică la toate programele cu acest source+programName
+    allPrograms.forEach(p=>{
+      if(p.source===item.source&&(!p.sheetMaterial||p.sheetMaterial==='?')){
+        p.sheetMaterial=sheetStr;
+        ensurePick(sheetKey(sheetStr));
+      }
+    });
+    renderNesturi();
+    if(typeof renderPicking==='function') renderPicking();
+    // Re-salvează în Supabase
+    if(typeof saveNestToSupabase==='function'){
+      saveNestToSupabase(item.source,allPrograms.filter(p=>p.source===item.source));
+    }
+    showToast('✓ Format tablă setat: '+sheetStr);
+  }
+  showNextSheetDimsPrompt();
+}
+
+function sheetDimsCancel(){
+  sheetDimsQueue.shift();
+  document.getElementById('sheet-dims-modal').style.display='none';
+  showNextSheetDimsPrompt();
+}
+</script>
 </body>
 </html>
+
