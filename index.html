@@ -172,6 +172,35 @@ body{font-family:-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:
 .nec-edit-inp:focus{border-color:var(--accent)}
 .nec-edit-inp.changed{border-color:var(--warn);background:rgba(239,83,80,.06);color:var(--warn)}
 .part-total-badge{font-family:var(--mono);font-size:.8rem;font-weight:700;color:var(--ok);background:rgba(38,198,106,.08);border:1px solid rgba(38,198,106,.2);border-radius:4px;padding:1px 6px}
+
+/* ── Header Dropzone (compact, in header) ── */
+#hdr-drop{display:none;align-items:center;gap:6px;padding:4px 10px;border:1.5px dashed var(--border2);border-radius:7px;cursor:pointer;transition:all .15s;background:var(--surf2)}
+#hdr-drop:hover,#hdr-drop.drag-over{border-color:var(--l3030);background:rgba(0,212,160,.08)}
+#hdr-drop label{font-size:.72rem;color:var(--muted);cursor:pointer;white-space:nowrap}
+#hdr-drop input{display:none}
+/* ── Shift Panel ── */
+.shift-panel{background:var(--surf);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;margin-bottom:14px}
+.shift-header-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.shift-timer-big{font-size:2rem;font-weight:700;font-family:var(--mono);color:var(--accent);letter-spacing:.05em}
+.shift-progress-wrap{flex:1;min-width:120px}
+.shift-progress-bar-outer{height:10px;background:var(--surf3);border-radius:5px;overflow:hidden;margin:4px 0}
+.shift-progress-bar-inner{height:100%;border-radius:5px;background:var(--accent);transition:width 1s linear}
+.shift-stats{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.shift-stat-item{text-align:center;min-width:90px;background:var(--surf2);border-radius:7px;padding:7px 12px;border:1px solid var(--border)}
+.shift-stat-val{font-size:.95rem;font-weight:700;font-family:var(--mono);color:var(--text)}
+.shift-stat-lbl{font-size:.62rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+.shift-inactive{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 0}
+/* ── Machine selector ── */
+.machine-sel{padding:6px 12px;background:var(--surf2);border:1px solid var(--border2);border-radius:7px;color:var(--text);font-size:.82rem;outline:none;cursor:pointer}
+.machine-sel:focus{border-color:var(--accent)}
+.shift-sel{padding:6px 12px;background:var(--surf2);border:1px solid var(--border2);border-radius:7px;color:var(--text);font-size:.82rem;outline:none;cursor:pointer}
+.shift-badge{font-size:.72rem;padding:3px 10px;border-radius:10px;font-weight:600}
+.shift-badge.s-06{background:rgba(77,155,255,.12);color:var(--bodor)}
+.shift-badge.s-14{background:rgba(0,212,160,.12);color:var(--l3030)}
+.shift-badge.s-22{background:rgba(239,83,80,.1);color:var(--warn)}
+.btn-start-shift{padding:8px 18px;background:var(--ok);border:none;border-radius:7px;color:#000;font-weight:700;font-size:.82rem;cursor:pointer;transition:opacity .15s}
+.btn-start-shift:hover{opacity:.85}
+.btn-end-shift{padding:8px 18px;background:rgba(239,83,80,.12);border:1px solid rgba(239,83,80,.4);border-radius:7px;color:var(--warn);font-weight:700;font-size:.82rem;cursor:pointer}
 .sched-inp{background:var(--surf3);border:1px solid var(--border2);border-radius:5px;
   padding:3px 8px;color:var(--accent);font-size:.72rem;font-family:var(--mono);outline:none;
   width:96px;transition:border-color .15s;letter-spacing:.04em;}
@@ -542,7 +571,15 @@ table.stat-log tr:last-child td{border-bottom:none;}
     <div class="stat"><span class="v" id="sFiles">0</span><span class="l">Surse</span></div>
     <div class="stat"><span class="v" id="sProgs">0</span><span class="l">Programe</span></div>
     <div class="stat"><span class="v" id="sSheets">0</span><span class="l">Total Coli</span></div>
-    <div class="user-info-bar" id="user-info-bar" style="display:none">
+    <!-- Header Dropzone (Nesturi) -->
+  <div id="hdr-drop" ondragover="event.preventDefault();this.classList.add('drag-over')"
+       ondragleave="this.classList.remove('drag-over')"
+       ondrop="event.preventDefault();this.classList.remove('drag-over');processFiles(event.dataTransfer.files)">
+    <label for="hdr-file-inp">📂 <span style="color:var(--l3030)">+</span> Nest</label>
+    <input type="file" id="hdr-file-inp" multiple accept=".html,.htm,.pdf,.xlsx,.xls,.csv"
+           onchange="processFiles(this.files)">
+  </div>
+  <div class="user-info-bar" id="user-info-bar" style="display:none">
     <div class="user-avatar" id="user-avatar">?</div>
     <span id="user-role-badge"></span>
     <span id="last-sync-lbl" style="font-size:.65rem;color:var(--dim);white-space:nowrap">—</span>
@@ -668,6 +705,10 @@ let labelConfig={
   labelsPerRow:3, fontSize:10
 };
 let printQueue=[];
+
+// ── Variabile Schimb ──
+let shiftState={active:false,machine:'',shiftLabel:'',loginTime:null,events:[],timerRef:null};
+let shiftMachine=''; // mașina selectată pentru raportare
 
 // ── Variabile Storage Supabase ──
 let storageUsedBytes=0;
@@ -2178,9 +2219,11 @@ function setupAppUI(){
 
 function updateDropzoneVisibility(){
   const dz=document.getElementById('dropzone-side');
-  if(!dz) return;
+  if(dz) dz.style.display='none'; // sidebar dropzone hidden (moved to header)
+  // Header dropzone
+  const hdrDz=document.getElementById('hdr-drop');
   const show=activeTab==='nesturi'&&typeof canImportNests==='function'&&canImportNests();
-  dz.style.display=show?'flex':'none';
+  if(hdrDz) hdrDz.style.display=show?'flex':'none';
 }
 
 async function manualRefresh(){
@@ -3269,6 +3312,292 @@ function cardNecInput(el){
   if(typeof renderPicking==='function'&&activeTab==='picking') renderPicking();
   if(typeof renderRaportare==='function'&&activeTab==='raportare') renderRaportare();
 }
+</script>
+
+
+
+<script>
+/* ══ SISTEM SCHIMBURI DE LUCRU ══ */
+
+const SHIFT_DURATION_MS = 480 * 60 * 1000; // 480 min
+const LUNCH_MS = 20 * 60 * 1000;           // 20 min pauza
+const SHIFTS = [
+  {label:'06:00-14:00', cls:'s-06', start:6,  end:14},
+  {label:'14:00-22:00', cls:'s-14', start:14, end:22},
+  {label:'22:00-06:00', cls:'s-22', start:22, end:6 },
+];
+
+function detectCurrentShift(){
+  const h=new Date().getHours();
+  if(h>=6&&h<14) return SHIFTS[0];
+  if(h>=14&&h<22) return SHIFTS[1];
+  return SHIFTS[2];
+}
+
+function shiftElapsedMs(){
+  if(!shiftState.loginTime) return 0;
+  return Date.now()-shiftState.loginTime.getTime();
+}
+
+function shiftRunningMs(){
+  // Total elapsed minus all event (stationari) durations
+  const eventsMs=shiftState.events.reduce((s,e)=>s+(e.duration||0),0);
+  const activeMs=stat.active?Date.now()-stat.active.startTime:0;
+  return Math.max(0, shiftElapsedMs()-eventsMs-activeMs);
+}
+
+function startShift(){
+  const machEl=document.getElementById('rap-machine-sel');
+  const shiftEl=document.getElementById('rap-shift-sel');
+  if(!machEl?.value){alert('Selectează mașina mai întâi!');return;}
+  shiftMachine=machEl.value;
+  const sIdx=parseInt(shiftEl?.value||'0');
+  const shift=SHIFTS[sIdx]||detectCurrentShift();
+  shiftState={
+    active:true,machine:shiftMachine,shiftLabel:shift.label,
+    loginTime:new Date(),events:[],timerRef:null,shiftIdx:sIdx
+  };
+  // Reset stationari for new shift
+  stat.log=[];stat.active=null;stat.runAccum=0;stat.runStart=Date.now();
+  // Start update timer
+  shiftState.timerRef=setInterval(()=>{
+    updateShiftDisplay();
+  },1000);
+  renderRaportare();
+  showToast('▶ Schimb pornit — '+shiftMachine+' / '+shift.label);
+}
+
+function endShift(){
+  if(!shiftState.active) return;
+  if(!confirm('Finalizezi schimbul? Datele vor fi salvate în baza de date.')) return;
+  clearInterval(shiftState.timerRef);
+  // Collect events from stationari log
+  shiftState.events=[...stat.log];
+  // Collect realizations
+  const raps=allPrograms.filter(p=>p.machine===shiftState.machine).map(p=>{
+    const ok=opKey(p);const d=opData[ok]||{};
+    return{source:p.source,programName:p.programName,machine:p.machine,
+      sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
+      coliDebitate:parseInt(d.coliDebitate)||0,motivDepasire:d.motivDepasire||''};
+  }).filter(r=>r.coliDebitate>0);
+  shiftState.logoutTime=new Date();
+  // Save to DB
+  saveShiftReport(raps);
+  shiftState.active=false;
+  renderRaportare();
+  showToast('✓ Schimb finalizat și salvat');
+}
+
+function updateShiftDisplay(){
+  const elapsed=shiftElapsedMs();
+  const running=shiftRunningMs();
+  const pct=Math.min(100,(elapsed/SHIFT_DURATION_MS)*100);
+  const timeEl=document.getElementById('shift-timer-big');
+  if(timeEl) timeEl.textContent=formatDur(elapsed);
+  const barEl=document.getElementById('shift-progress-bar-inner');
+  if(barEl){barEl.style.width=pct.toFixed(1)+'%';
+    barEl.style.background=pct>90?'var(--warn)':pct>75?'var(--accent)':'var(--ok)';}
+  const pctEl=document.getElementById('shift-pct');
+  if(pctEl) pctEl.textContent=pct.toFixed(0)+'%';
+  const runEl=document.getElementById('shift-running-val');
+  if(runEl) runEl.textContent=formatDur(running);
+}
+
+async function saveShiftReport(realizations){
+  if(!sb||!currentUser) return;
+  const eventsMs=shiftState.events.reduce((s,e)=>s+(e.duration||0),0);
+  const payload={
+    machine:shiftState.machine,
+    operator_id:currentUser.id,
+    operator_name:currentProfile?.display_name||'',
+    shift_label:shiftState.shiftLabel,
+    login_time:shiftState.loginTime.toISOString(),
+    logout_time:(shiftState.logoutTime||new Date()).toISOString(),
+    total_ms:shiftElapsedMs(),
+    running_ms:shiftRunningMs(),
+    events:shiftState.events.map(e=>({
+      type:e.type,label:e.label,icon:e.icon||'',desc:e.desc||'',
+      duration:e.duration,startTime:new Date(e.startTime).toISOString(),
+      endTime:new Date(e.endTime).toISOString()
+    })),
+    realizations:realizations||[]
+  };
+  const{error}=await sb.from('shift_reports').insert(payload);
+  if(error) console.warn('[NV] saveShiftReport error:',error.message);
+  else console.log('[NV] Shift saved to DB');
+}
+
+/* ══ REDESIGN RENDERRAPORTARE ══ */
+function renderRaportare(){
+  const el=document.getElementById('raportare-main');
+  if(!el) return;
+
+  // Detectăm mașinile disponibile
+  const machines=[...new Set(allPrograms.map(p=>p.machine))].filter(Boolean);
+  if(!shiftMachine&&machines.length) shiftMachine=machines[0];
+
+  const curShift=detectCurrentShift();
+  const elapsed=shiftElapsedMs();
+  const running=shiftRunningMs();
+  const pct=shiftState.active?Math.min(100,(elapsed/SHIFT_DURATION_MS)*100):0;
+  const eventsSum={};
+  STAT_TYPES?.forEach(t=>{eventsSum[t.id]={count:0,total:0,label:t.label,icon:t.icon||''}});
+  (shiftState.active?stat.log:[]).forEach(e=>{
+    if(eventsSum[e.type]){eventsSum[e.type].count++;eventsSum[e.type].total+=e.duration||0;}
+  });
+
+  // ── SECTIUNEA 1: SHIFT ──
+  const machOpts=machines.length
+    ?machines.map(m=>`<option value="${esc(m)}" ${m===shiftMachine?'selected':''}>${esc(m)}</option>`).join('')
+    :'<option>—</option>';
+  const shiftOpts=SHIFTS.map((s,i)=>`<option value="${i}" ${(shiftState.shiftIdx||0)===i||(s.start===curShift.start&&!shiftState.active)?'selected':''}>${s.label}</option>`).join('');
+
+  let shiftSection='';
+  if(!shiftState.active){
+    shiftSection=`<div class="shift-inactive">
+      <div>
+        <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px">Mașină</div>
+        <select class="machine-sel" id="rap-machine-sel" onchange="shiftMachine=this.value">${machOpts}</select>
+      </div>
+      <div>
+        <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px">Schimb</div>
+        <select class="shift-sel" id="rap-shift-sel">${shiftOpts}</select>
+      </div>
+      <button class="btn-start-shift" onclick="startShift()">▶ Pornește Schimbul</button>
+      <div style="font-size:.72rem;color:var(--dim)">
+        Schimb curent detectat: <span class="shift-badge ${curShift.cls}">${curShift.label}</span>
+      </div>
+    </div>`;
+  } else {
+    const evStats=Object.values(eventsSum).filter(e=>e.count>0).map(e=>
+      `<div class="shift-stat-item">
+        <div class="shift-stat-val">${formatDur(e.total)}</div>
+        <div class="shift-stat-lbl">${e.icon} ${e.label}</div>
+        <div style="font-size:.6rem;color:var(--dim)">${e.count}×</div>
+      </div>`).join('');
+    shiftSection=`
+      <div class="shift-header-row">
+        <div>
+          <div style="font-size:.65rem;color:var(--muted)">MAȘINĂ</div>
+          <div style="font-size:.88rem;font-weight:700;color:var(--text)">${esc(shiftState.machine)}</div>
+        </div>
+        <div><span class="shift-badge ${SHIFTS[shiftState.shiftIdx||0]?.cls||'s-06'}">${shiftState.shiftLabel}</span></div>
+        <div style="flex:1">
+          <div id="shift-timer-big" class="shift-timer-big">${formatDur(elapsed)}</div>
+          <div class="shift-progress-wrap">
+            <div class="shift-progress-bar-outer">
+              <div id="shift-progress-bar-inner" class="shift-progress-bar-inner" style="width:${pct.toFixed(1)}%"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:.65rem;color:var(--dim)">
+              <span>Login: ${shiftState.loginTime?.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'})}</span>
+              <span id="shift-pct">${pct.toFixed(0)}%</span>
+              <span>480 min</span>
+            </div>
+          </div>
+        </div>
+        <button class="btn-end-shift" onclick="endShift()">⏹ Finalizează Schimbul</button>
+      </div>
+      <div class="shift-stats">
+        <div class="shift-stat-item">
+          <div class="shift-stat-val" id="shift-running-val">${formatDur(running)}</div>
+          <div class="shift-stat-lbl">⚙ Funcționare</div>
+        </div>
+        <div class="shift-stat-item">
+          <div class="shift-stat-val">${formatDur(elapsed-running)}</div>
+          <div class="shift-stat-lbl">⏸ Stationări</div>
+        </div>
+        <div class="shift-stat-item">
+          <div class="shift-stat-val">${formatDur(LUNCH_MS)}</div>
+          <div class="shift-stat-lbl">🍽 Pauză masă</div>
+        </div>
+        ${evStats}
+      </div>`;
+  }
+
+  // ── SECTIUNEA 2: STATIONĂRI (eveniment activ) ──
+  // (render via renderStatPanel)
+
+  // ── SECTIUNEA 3: REALIZĂRI pentru mașina selectată ──
+  const machine=shiftState.active?shiftState.machine:shiftMachine;
+  const machProgs=allPrograms.filter(p=>p.machine===machine&&!isCompleted(p));
+  const realizedProgs=allPrograms.filter(p=>p.machine===machine&&isCompleted(p));
+
+  const si=col=>rapSort.col===col?`<span class="sort-ind">${rapSort.asc?'▲':'▼'}</span>`:'';
+  const th=(col,label)=>`<th onclick="rapSetSort('${col}')" style="cursor:pointer">${label}${si(col)}</th>`;
+
+  function buildRapRow(p){
+    const ok=opKey(p);const sk=sheetKey(p.sheetMaterial);const d=opData[ok]||{coliDebitate:'',motivDepasire:''};
+    const nec=effectiveNec(p);const deb=parseInt(d.coliDebitate)||0;
+    const pct2=nec>0?Math.min(100,Math.round(deb/nec*100)):0;
+    const clr=deb===0?'var(--dim)':deb>=nec?'var(--ok)':'var(--accent)';
+    const sid=safeId(ok);const isL=p.type==='l3030';
+    return `<tr class="data-row">
+      <td><div class="tdi" style="text-align:center">${getPriority(p.source)?`<span style="display:inline-block;min-width:22px;height:22px;line-height:22px;border-radius:50%;background:rgba(240,160,0,.15);color:var(--accent);font-weight:700;font-size:.72rem;border:1px solid rgba(240,160,0,.4)">${getPriority(p.source)}</span>`:'—'}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.73rem;font-weight:600">${esc(p.programName||p.source||'')}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem">${displaySheet(p.sheetMaterial)}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem;color:var(--muted)">${esc(pickingData[sk]?.sheetCode||'')}</div></td>
+      <td onclick="event.stopPropagation()"><div class="tdi" style="min-width:150px">
+        <div class="prog-bar-wrap">
+          <div class="prog-bar"><div class="prog-bar-fill" id="pbf-${sid}" style="width:${pct2}%;background:${clr}"></div></div>
+          <input type="number" class="pk-input qty" style="width:56px;padding:3px 5px;font-size:.74rem" value="${esc(d.coliDebitate)}" min="0"
+            data-ok="${ok.replace(/"/g,'&quot;')}" data-nec="${nec}" data-sid="${sid}" data-prev="${esc(d.coliDebitate)}"
+            oninput="rapDebInput(this)" onclick="event.stopPropagation()">
+          <span id="pbl-${sid}" class="prog-label" style="color:${clr}">${deb}/${nec}</span>
+        </div>
+      </div></td>
+      <td onclick="event.stopPropagation()"><div class="tdi">
+        <input type="number" class="pk-input qty" style="width:54px;text-align:center;padding:3px 5px;font-size:.74rem;color:var(--accent)"
+          value="${nec}" min="1" data-ok="${ok}" data-sid="${sid}" data-orig="${p.numOfSheet}"
+          oninput="rapNecInput(this)" onclick="event.stopPropagation()">
+        ${nec!==p.numOfSheet?`<span style="font-size:.6rem;color:var(--dim);margin-left:3px">↩${p.numOfSheet}</span>`:''}
+      </div></td>
+    </tr>`;
+  }
+
+  const realSection=realizedProgs.length?`
+    <div class="s-head" style="margin-top:16px">✅ Realizate integral (${realizedProgs.length})</div>
+    <div class="rap-wrap"><table class="rap">
+      <thead><tr>${th('prio','Prio.')}${th('program','Program')}${th('sheet','Format')}${th('cod','Cod')}
+        <th>Coli Debitate</th><th>Coli Nec.</th></tr></thead>
+      <tbody>${realizedProgs.map(buildRapRow).join('')}</tbody>
+    </table></div>`:'';
+
+  const totNec=machProgs.reduce((s,p)=>s+effectiveNec(p),0);
+  const totDeb=machProgs.reduce((s,p)=>s+(parseInt(opData[opKey(p)]?.coliDebitate)||0),0);
+
+  el.innerHTML=`
+    <div class="shift-panel">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span style="font-size:.85rem;font-weight:700">📋 Schimb de Lucru</span>
+        <span style="font-size:.7rem;color:var(--dim)">480 min · pauza 20 min</span>
+      </div>
+      ${shiftSection}
+    </div>
+
+    <div class="stat-panel" id="stat-panel"></div>
+
+    <div class="s-head" style="margin-top:4px">
+      ⚙ Realizări — <span style="color:var(--accent)">${esc(machine||'Selectează mașina')}</span>
+      <span style="font-size:.7rem;font-weight:400;color:var(--muted);margin-left:8px">${machProgs.length} programe · ${totNec} nec · <span style="color:var(--ok)">${totDeb} deb</span></span>
+    </div>
+    ${machProgs.length?`<div class="rap-wrap"><table class="rap">
+      <thead><tr>${th('prio','Prio.')}${th('program','Program')}${th('sheet','Format')}${th('cod','Cod')}
+        <th>Coli Debitate</th><th>Coli Nec.</th></tr></thead>
+      <tbody>${machProgs.map(buildRapRow).join('')}</tbody>
+      <tfoot><tr><td colspan="4" style="text-align:right;color:var(--muted);font-size:.71rem">TOTAL:</td>
+        <td style="text-align:center;color:var(--ok)">${totDeb}</td>
+        <td style="text-align:center;color:var(--accent)">${totNec}</td></tr></tfoot>
+    </table></div>`
+    :`<div class="empty-state" style="padding:20px"><div class="et">${allPrograms.length?'Niciun nest pentru mașina '+esc(machine)+' sau toate au fost realizate.':'Încarcă nesturi pentru a vedea realizările.'}</div></div>`}
+    ${realSection}`;
+
+  renderStatPanel();
+}
+
+function rapSearchChange(v){rapSearch=v;renderRaportare();}
+function rapMachineChange(v){rapMachine=v;renderRaportare();}
+function rapFormatChange(v){rapFormat=v;renderRaportare();}
+function rapSetSort(col){if(rapSort.col===col) rapSort.asc=!rapSort.asc;else{rapSort.col=col;rapSort.asc=true;}renderRaportare();}
 </script>
 </body>
 </html>
