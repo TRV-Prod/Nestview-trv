@@ -415,6 +415,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 
 </head>
 <body>
@@ -576,7 +577,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
        ondragleave="this.classList.remove('drag-over')"
        ondrop="event.preventDefault();event.stopPropagation();this.classList.remove('drag-over');processFiles(event.dataTransfer.files)">
     <label for="hdr-file-inp">📂 <span style="color:var(--l3030)">+</span> Nest</label>
-    <input type="file" id="hdr-file-inp" multiple accept=".html,.htm,.pdf,.xlsx,.xls,.csv"
+    <input type="file" id="hdr-file-inp" multiple accept=".html,.htm,.pdf,.lst,.ncex,.xlsx,.xls,.csv"
            onchange="processFiles(this.files);this.value=''">
   </div>
   <div class="user-info-bar" id="user-info-bar" style="display:none">
@@ -937,11 +938,252 @@ function deleteImageCache(source){
   try{localStorage.removeItem(_imgCacheKey(source));}catch(e){}
 }
 
+
+/* ══ PARSER LST (Trumpf TruTops) ══ */
+async function handleLST(file){
+  const card=appendLoadingCard(file.name);
+  try{
+    const buf=await file.arrayBuffer();
+    // LST e ISO-8859-1
+    const text=new TextDecoder('iso-8859-1').decode(buf);
+    const programs=parseLSTText(text,file.name);
+    card.remove();
+    if(!programs.length){appendError('LST fără programe valide: '+file.name);return;}
+    onLoaded(programs);
+  }catch(e){
+    card.remove();
+    appendError('Eroare LST ('+file.name+'): '+e.message);
+    console.error('[NV] handleLST:',e);
+  }
+}
+
+function lstJoinContinuations(text){
+  // LST folosește continuări: linii care încep cu '*' sau '-' continuă linia DA anterioară
+  const lines=text.replace(/\r\n/g,'\n').split('\n');
+  const joined=[];
+  for(const line of lines){
+    if(/^[*\-]\s\s/.test(line)&&joined.length){
+      // continuare: elimină prefix și concatenează
+      joined[joined.length-1]+=line.replace(/^[*\-]\s+/,'');
+    } else joined.push(line);
+  }
+  return joined;
+}
+
+function lstParseDA(daLine){
+  // Parsează câmpurile unei linii DA,... respectând ghilimele simple
+  const s=daLine.replace(/^DA,/,'');
+  const fields=[];let cur='';let inQ=false;
+  for(let i=0;i<s.length;i++){
+    const ch=s[i];
+    if(ch==="'"){inQ=!inQ;continue;}
+    if(ch===','&&!inQ){fields.push(cur);cur='';continue;}
+    cur+=ch;
+  }
+  fields.push(cur);
+  return fields.map(f=>f.trim());
+}
+
+function parseLSTText(text,filename){
+  const lines=lstJoinContinuations(text);
+  const source=filename.replace(/\.lst$/i,'');
+
+  // Găsește secțiunile
+  let section='';
+  let progName='',machine='TruLaser 3030 (L3030)',rpt=1;
+  let sheetX=0,sheetY=0,sheetZ=0,materialId='';
+  const partsMeta={}; // ident → {geoName, count, dimX, dimY}
+
+  for(const line of lines){
+    if(line.startsWith('BEGIN_')){section=line.replace('BEGIN_','').trim();continue;}
+    if(line.startsWith('ENDE_')){section='';continue;}
+    if(!line.startsWith('DA,')) continue;
+    const f=lstParseDA(line);
+
+    if(section==='EINRICHTEPLAN_INFO'){
+      // DA,'L3030S',1,'Sin 840D',1,'Trumpf','Nest12541','cax','15.07.2026','Nest12541',1,...
+      progName=f[5]||source; // Programmnummer
+      rpt=parseInt(f[9])||1; // Anzahl der Programmdurchlaeufe
+      materialId=f[12]||'';  // Material-ID
+      const vm=f[f.length-1]||''; // viewer name machine (ultimul câmp)
+      if(vm&&vm.length>3) machine=vm;
+    }
+    else if(section==='SHEET_TECH'){
+      // DA,'SHT-1',3000.00,1500.00,6.00,1,3000.00,1500.00,'St37-60',7.850,'1.0038'
+      sheetX=parseFloat(f[1])||0;sheetY=parseFloat(f[2])||0;sheetZ=parseFloat(f[3])||0;
+      if(!materialId) materialId=f[7]||'';
+    }
+    else if(section==='PARTS_IN_PROGRAM'){
+      const ident=f[2]||'';
+      if(!ident||ident.startsWith('@BLANK')) continue;
+      // Structura de la FINAL e stabilă (22-23 câmpuri):
+      // [-11]=drawName, [-10]=dimX, [-9]=dimY, [-8]=verbuch, ...
+      // pcs: primul câmp întreg DUPĂ calea .GEO
+      let pcs=0;
+      const geoIdx=f.findIndex(v=>/\.geo$/i.test(v));
+      if(geoIdx>0&&geoIdx+1<f.length) pcs=parseInt(f[geoIdx+1])||0;
+      if(!pcs){
+        // fallback: caută primul câmp numeric întreg pozitiv după index 4
+        for(let i=5;i<f.length;i++){if(/^\d{1,4}$/.test(f[i])&&parseInt(f[i])>0){pcs=parseInt(f[i]);break;}}
+      }
+      const n=f.length;
+      const drawName=(n>=12&&/^[A-Za-z]/.test(f[n-11]))?f[n-11]:ident;
+      const dimX=parseFloat(f[n-10])||0,dimY=parseFloat(f[n-9])||0;
+      partsMeta[ident]={alias:ident,drawing:drawName,pcs,dimX,dimY};
+    }
+  }
+
+  const parts=Object.values(partsMeta).map(p=>({
+    alias:p.alias,drawing:p.drawing||'',pcs:p.pcs,
+    dims:p.dimX&&p.dimY?`${p.dimX}×${p.dimY}mm`:'',
+    imageDataUrl:null,imageUrl:null
+  }));
+
+  if(!parts.length&&!progName) return [];
+
+  const sheetMaterial=sheetX&&sheetY&&sheetZ?`${sheetX}x${sheetY}x${sheetZ}mm`:'?';
+
+  return [{
+    type:'l3030',machine,
+    source,nestName:source,
+    programName:progName||source,
+    rpt:String(rpt),numOfSheet:rpt,
+    sheetMaterial,_rawSheetText:`${sheetX} x ${sheetY} x ${sheetZ} ${materialId}`,
+    parts,thumbnail:null
+  }];
+}
+
+/* ══ PARSER NCEX (Bodor — ZIP cu XML + SVG-uri piese) ══ */
+async function handleNCEX(file){
+  const card=appendLoadingCard(file.name);
+  try{
+    if(typeof JSZip==='undefined'){
+      await new Promise((res,rej)=>{
+        const s=document.createElement('script');
+        s.src='https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+        s.onload=res;s.onerror=()=>rej(new Error('JSZip CDN'));
+        document.head.appendChild(s);
+      });
+    }
+    const buf=await file.arrayBuffer();
+    const zip=await JSZip.loadAsync(buf);
+
+    // CadRoot.xml conține totul
+    const cadRootFile=zip.file(/CadRoot\.xml$/i)[0];
+    if(!cadRootFile) throw new Error('CadRoot.xml lipsă din NCEX');
+    const cadXml=await cadRootFile.async('string');
+    const doc=new DOMParser().parseFromString(cadXml,'text/xml');
+
+    const source=file.name.replace(/\.ncex$/i,'');
+
+    // Parts: <Part idref svgname params="Name=...;TotalCount=...;NestedCount=...">
+    const partEls=[...doc.querySelectorAll('Part')];
+    const parts=[];
+    for(const el of partEls){
+      const params=el.getAttribute('params')||'';
+      const getP=k=>{const m=params.match(new RegExp(k+'=([^;]*)'));return m?m[1]:'';};
+      const name=getP('Name').replace(/\(\d+\)$/,''); // "1830147342P2L(1)" → "1830147342P2L"
+      const nested=parseInt(getP('NestedCount'))||parseInt(getP('TotalCount'))||0;
+      const svgname=el.getAttribute('svgname');
+
+      // Extrage SVG-ul piesei și convertește-l în dataURL renderable
+      let imageDataUrl=null;
+      if(svgname){
+        const svgFile=zip.file(new RegExp(svgname.replace('.','\\.')+'$','i'))[0];
+        if(svgFile){
+          let svgContent=await svgFile.async('string');
+          imageDataUrl=await ncexSvgToDataUrl(svgContent);
+        }
+      }
+      parts.push({alias:name,pcs:nested,imageDataUrl,imageUrl:null});
+    }
+
+    // Adobe (tabla): params="Material=cs;Thickness=8;Length=3000;..."
+    let sheetMaterial='?';
+    const adobeEls=[...doc.querySelectorAll('Adobe')];
+    // Ultimul adobe cu NestedCount>0 sau Material e tabla folosită
+    for(const el of adobeEls){
+      const params=el.getAttribute('params')||'';
+      const getP=k=>{const m=params.match(new RegExp(k+'=([^;]*)'));return m?m[1]:'';};
+      const thick=parseFloat(getP('Thickness'));
+      const len=parseFloat(getP('Length'));
+      if(thick&&len){
+        // SheetSize: Length e lungimea. Lățimea standard: verifică din Result sau folosim 1500
+        sheetMaterial=`${len}x1500x${thick}mm`;
+      }
+    }
+
+    // Results: count = numărul de coli
+    let numOfSheet=1;
+    const resultEl=doc.querySelector('Result');
+    if(resultEl) numOfSheet=parseInt(resultEl.getAttribute('count'))||1;
+    const resultName=(resultEl?.getAttribute('params')||'').match(/ResultName=([^;]*)/)?.[1]||'Result 1';
+
+    card.remove();
+    onLoaded([{
+      type:'bodor',machine:'Bodor',
+      source,nestName:source,
+      programName:resultName.replace(/\s+/g,''),
+      plateNum:'',numOfSheet,
+      sheetMaterial,_rawSheetText:sheetMaterial,
+      parts,thumbnail:null
+    }]);
+  }catch(e){
+    card.remove();
+    appendError('Eroare NCEX ('+file.name+'): '+e.message);
+    console.error('[NV] handleNCEX:',e);
+  }
+}
+
+async function ncexSvgToDataUrl(svgContent){
+  try{
+    // SVG-urile NCEX nu au viewBox — calculăm bounds din coordonate
+    const coords=[...svgContent.matchAll(/(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)/g)];
+    if(!coords.length) return null;
+    let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+    for(const m of coords.slice(0,3000)){
+      const x=parseFloat(m[1]),y=parseFloat(m[2]);
+      if(isNaN(x)||isNaN(y)||Math.abs(x)>1e5||Math.abs(y)>1e5) continue;
+      minX=Math.min(minX,x);minY=Math.min(minY,y);
+      maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);
+    }
+    if(minX>=maxX||minY>=maxY) return null;
+    const pad=(maxX-minX)*0.05;
+    const vb=`${minX-pad} ${minY-pad} ${maxX-minX+2*pad} ${maxY-minY+2*pad}`;
+    // Injectează viewBox + strokes vizibile pe fundal alb
+    let svg=svgContent
+      .replace(/<svg /,`<svg viewBox="${vb}" `)
+      .replace(/stroke:rgb\([^)]*\)/g,'stroke:#1a1a2e')
+      .replace(/stroke-width:[\d.]+/g,'stroke-width:2');
+    // Render în canvas pentru PNG dataURL compact
+    return await new Promise((resolve)=>{
+      const img=new Image();
+      const blob=new Blob([svg],{type:'image/svg+xml'});
+      const url=URL.createObjectURL(blob);
+      img.onload=()=>{
+        const scale=Math.min(1,300/Math.max(img.width,img.height,1));
+        const cvs=document.createElement('canvas');
+        cvs.width=Math.max(1,Math.round((img.width||300)*scale));
+        cvs.height=Math.max(1,Math.round((img.height||300)*scale));
+        const ctx=cvs.getContext('2d');
+        ctx.fillStyle='#fff';ctx.fillRect(0,0,cvs.width,cvs.height);
+        ctx.drawImage(img,0,0,cvs.width,cvs.height);
+        URL.revokeObjectURL(url);
+        resolve(cvs.toDataURL('image/png'));
+      };
+      img.onerror=()=>{URL.revokeObjectURL(url);resolve(null);};
+      img.src=url;
+    });
+  }catch(e){console.warn('ncexSvgToDataUrl:',e.message);return null;}
+}
+
 async function processFiles(files){
   for(const f of Array.from(files)){
     const ext=f.name.split('.').pop().toLowerCase();
     if(ext==='html'||ext==='htm') await handleHTML(f);
     else if(ext==='pdf') await handlePDF(f);
+    else if(ext==='lst') await handleLST(f);
+    else if(ext==='ncex') await handleNCEX(f);
     else if(['xlsx','xls','xlsm','csv'].includes(ext)){
       if(typeof switchTab==='function') switchTab('stocuri');
       if(typeof importStockFile==='function') await importStockFile(f);
