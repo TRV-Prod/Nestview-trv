@@ -574,10 +574,10 @@ table.stat-log tr:last-child td{border-bottom:none;}
     <!-- Header Dropzone (Nesturi) -->
   <div id="hdr-drop" ondragover="event.preventDefault();this.classList.add('drag-over')"
        ondragleave="this.classList.remove('drag-over')"
-       ondrop="event.preventDefault();this.classList.remove('drag-over');processFiles(event.dataTransfer.files)">
+       ondrop="event.preventDefault();event.stopPropagation();this.classList.remove('drag-over');processFiles(event.dataTransfer.files)">
     <label for="hdr-file-inp">📂 <span style="color:var(--l3030)">+</span> Nest</label>
     <input type="file" id="hdr-file-inp" multiple accept=".html,.htm,.pdf,.xlsx,.xls,.csv"
-           onchange="processFiles(this.files)">
+           onchange="processFiles(this.files);this.value=''">
   </div>
   <div class="user-info-bar" id="user-info-bar" style="display:none">
     <div class="user-avatar" id="user-avatar">?</div>
@@ -630,7 +630,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
 <div id="view-stocuri" class="view" style="max-width:100%;width:100%">
   <div style="padding:10px 16px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <strong style="font-size:.82rem;color:var(--text)">📦 Import Stocuri</strong>
-    <input type="file" id="stock-file-inp-top" accept=".csv,.xlsx,.xls,.xlsm" style="display:none" onchange="importStockFile(this.files[0])">
+    <input type="file" id="stock-file-inp-top" accept=".csv,.xlsx,.xls,.xlsm" style="display:none" onchange="importStockFile(this.files[0]);this.value=''">
     <button class="auth-btn" style="max-width:200px;font-size:.78rem;padding:7px 14px" onclick="document.getElementById('stock-file-inp-top').click()">
       📂 Selectează Excel / CSV
     </button>
@@ -1012,6 +1012,11 @@ function doPostLoadRender(){
 }
 
 function onLoaded(programs){
+  // Deduplicare: elimină versiunile vechi ale surselor reimportate
+  const newSources=new Set(programs.map(p=>p.source));
+  for(let i=allPrograms.length-1;i>=0;i--){
+    if(newSources.has(allPrograms[i].source)) allPrograms.splice(i,1);
+  }
   allPrograms.push(...programs);
   programs.forEach(p=>{p._importedAt=Date.now();ensurePick(sheetKey(p.sheetMaterial));ensureOp(p);ensureSchedule(p.source);});
   // Adaugă surse noi în coada de prompt-uri Schedule No.
@@ -2337,9 +2342,15 @@ async function loadAllData(){
     });
     console.log('[NV] Loaded from DB: nests=',nests.length,'programs=',newProgs.length);
     if(newProgs.length>0){
-      // DB are programe → actualizează
+      // Deduplicare pe source+programName (protecție împotriva rândurilor duplicate din DB)
+      const seen=new Set();
+      const unique=newProgs.filter(p=>{
+        const k=p.source+'|||'+(p.programName||'');
+        if(seen.has(k)) return false;
+        seen.add(k);return true;
+      });
       allPrograms.length=0;
-      allPrograms.push(...newProgs);
+      allPrograms.push(...unique);
     } else if(nests.length===0){
       // Nu există nesturi în DB → resetează
       allPrograms.length=0;
@@ -2915,13 +2926,6 @@ async function initApp(){
   // auth-screen rămâne vizibil, setează listener
   setupAuthListener();
 }
-
-// Global stock import trigger
-document.addEventListener('DOMContentLoaded',()=>{
-  // Ensure stock upload button always works
-  const btn=document.getElementById('stock-file-inp-top');
-  if(btn) btn.addEventListener('change',function(){if(this.files[0]) importStockFile(this.files[0]);});
-});
 
 document.addEventListener('keydown',e=>{
   if(e.key==='Enter'&&document.getElementById('auth-screen')?.style.display!=='none'){
