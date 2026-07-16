@@ -436,12 +436,19 @@ table.stat-log tr:last-child td{border-bottom:none;}
 
 <!-- Schedule No. Prompt Modal -->
 <div class="surplus-overlay" id="sched-modal">
-  <div class="oc-box" style="border-color:rgba(77,155,255,.4);max-width:420px">
-    <div class="oc-title" style="color:var(--bodor)">📋 Schedule No.</div>
+  <div class="oc-box" style="border-color:rgba(77,155,255,.4);max-width:460px">
+    <div class="oc-title" style="color:var(--bodor)">📋 Schedule No. + Tip Tablă</div>
     <div class="oc-msg" id="sched-msg-src" style="font-family:var(--mono);font-size:.82rem;margin-bottom:10px;color:var(--text)"></div>
     <div class="oc-msg">Introduceți Schedule No. (prefix 035602 + 5 cifre):</div>
     <input type="text" id="sched-inp-modal" class="oc-reason" style="height:auto;padding:9px 14px;font-size:1rem;font-family:var(--mono);letter-spacing:.06em;margin-top:4px" maxlength="20" placeholder="035602XXXXX">
-    <div class="oc-btns" style="margin-top:12px">
+    <div class="oc-msg" style="margin-top:14px">Tip tablă <span style="color:var(--warn)">*obligatoriu</span>:</div>
+    <div id="sheet-type-radios" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
+      <!-- populat de JS -->
+    </div>
+    <div id="sheet-type-err" style="display:none;color:var(--warn);font-size:.75rem;margin-top:8px;padding:6px 10px;background:rgba(239,83,80,.08);border:1px solid rgba(239,83,80,.3);border-radius:6px">
+      ⚠ Selectează un tip de tablă înainte de a continua!
+    </div>
+    <div class="oc-btns" style="margin-top:14px">
       <button class="oc-cancel" onclick="schedCancel()">Fără Schedule No.</button>
       <button class="oc-confirm" style="background:rgba(77,155,255,.12);border-color:rgba(77,155,255,.4);color:var(--bodor)" onclick="schedConfirm()">✓ Confirmă</button>
     </div>
@@ -939,6 +946,33 @@ function deleteImageCache(source){
 }
 
 
+
+/* ══ AUTO-DELETE NESTURI COMPLETE ══ */
+function checkSourceComplete(source){
+  // Toate programele sursei sunt raportate integral?
+  const progs=allPrograms.filter(p=>p.source===source);
+  if(!progs.length) return false;
+  return progs.every(p=>isCompleted(p));
+}
+
+function autoDeleteCompletedSource(source){
+  if(!checkSourceComplete(source)) return;
+  console.log('[NV] Sursă raportată integral → ștergere automată:',source);
+  // Șterge din memorie
+  for(let i=allPrograms.length-1;i>=0;i--){
+    if(allPrograms[i].source===source) allPrograms.splice(i,1);
+  }
+  delete scheduleData[source];
+  // Șterge din Supabase
+  if(typeof deleteNestFromSupabase==='function') deleteNestFromSupabase(source);
+  if(typeof deleteImageCache==='function') deleteImageCache(source);
+  if(typeof deleteSourceImages==='function') deleteSourceImages(source);
+  refreshStats();updateTabCounts();
+  renderNesturi();
+  if(typeof renderPicking==='function') renderPicking();
+  showToast('✓ Nest "'+source+'" raportat integral — eliminat din listă');
+}
+
 /* ══ PARSER LST (Trumpf TruTops) ══ */
 async function handleLST(file){
   const card=appendLoadingCard(file.name);
@@ -990,7 +1024,7 @@ function parseLSTText(text,filename){
 
   // Găsește secțiunile
   let section='';
-  let progName='',machine='TruLaser 3030 (L3030)',rpt=1;
+  let progName='',machine='TruLaser 3030 (L3030)',rpt=1,cutMinutesLst=0;
   let sheetX=0,sheetY=0,sheetZ=0,materialId='';
   const partsMeta={}; // ident → {geoName, count, dimX, dimY}
 
@@ -1005,6 +1039,11 @@ function parseLSTText(text,filename){
       progName=f[5]||source; // Programmnummer
       rpt=parseInt(f[9])||1; // Anzahl der Programmdurchlaeufe
       materialId=f[12]||'';  // Material-ID
+      // Maschinenzeit (min) — câmp numeric cu zecimale după Tafelgewicht
+      for(let i=13;i<Math.min(f.length,17);i++){
+        const v=parseFloat(f[i]);
+        if(v>0&&v<2000&&f[i].includes('.')){cutMinutesLst=v;break;}
+      }
       const vm=f[f.length-1]||''; // viewer name machine (ultimul câmp)
       if(vm&&vm.length>3) machine=vm;
     }
@@ -1049,6 +1088,7 @@ function parseLSTText(text,filename){
     programName:progName||source,
     rpt:String(rpt),numOfSheet:rpt,
     sheetMaterial,_rawSheetText:`${sheetX} x ${sheetY} x ${sheetZ} ${materialId}`,
+    cutMinutes:cutMinutesLst*rpt,
     parts,thumbnail:null
   }];
 }
@@ -1218,25 +1258,62 @@ function setPriority(src,val){
   },800);
 }
 let schedQueue=[];
+const SHEET_TYPES=['Oțel','Aluminiu','Inox','Zincor','Magnelis','Galva','Altele'];
+const SHEET_TYPE_COLORS={
+  'Oțel':'#8899aa','Aluminiu':'#b0c4de','Inox':'#c0c0d8',
+  'Zincor':'#7fd4c1','Magnelis':'#d4b87f','Galva':'#a9d47f','Altele':'#9d8fd4'
+};
+function renderSheetTypeRadios(selected){
+  const wrap=document.getElementById('sheet-type-radios');
+  if(!wrap) return;
+  wrap.innerHTML=SHEET_TYPES.map(t=>`
+    <label style="display:flex;align-items:center;gap:5px;padding:6px 12px;background:${selected===t?'rgba(77,155,255,.15)':'var(--surf2)'};border:1.5px solid ${selected===t?'var(--bodor)':'var(--border2)'};border-radius:7px;cursor:pointer;font-size:.78rem;transition:all .12s;user-select:none">
+      <input type="radio" name="sheet-type" value="${t}" ${selected===t?'checked':''}
+        onchange="renderSheetTypeRadios('${t}');document.getElementById('sheet-type-err').style.display='none'"
+        style="accent-color:var(--bodor);cursor:pointer">
+      ${t}
+    </label>`).join('');
+}
+function getSelectedSheetType(){
+  const sel=document.querySelector('input[name="sheet-type"]:checked');
+  return sel?sel.value:null;
+}
 function showNextSchedPrompt(){
   if(!schedQueue.length){doPostLoadRender();return;}
   const src=schedQueue[0];
   document.getElementById('sched-msg-src').textContent=src;
   const inp=document.getElementById('sched-inp-modal');
   inp.value=getSchedNo(src)||'035602';
+  renderSheetTypeRadios(scheduleData[src]?.sheetType||null);
+  document.getElementById('sheet-type-err').style.display='none';
   document.getElementById('sched-modal').style.display='flex';
   setTimeout(()=>{inp.focus();inp.select();},80);
 }
 function schedConfirm(){
+  const st=getSelectedSheetType();
+  if(!st){document.getElementById('sheet-type-err').style.display='block';return;}
   const src=schedQueue.shift();
-  ensureSchedule(src);scheduleData[src].schedNo=document.getElementById('sched-inp-modal').value.trim();
+  ensureSchedule(src);
+  scheduleData[src].schedNo=document.getElementById('sched-inp-modal').value.trim();
+  scheduleData[src].sheetType=st;
   document.getElementById('sched-modal').style.display='none';
   showNextSchedPrompt();
 }
 function schedCancel(){
-  schedQueue.shift();
+  const st=getSelectedSheetType();
+  if(!st){document.getElementById('sheet-type-err').style.display='block';return;}
+  const src=schedQueue.shift();
+  ensureSchedule(src);
+  scheduleData[src].sheetType=st;
   document.getElementById('sched-modal').style.display='none';
   showNextSchedPrompt();
+}
+function getSheetType(src){return scheduleData[src]?.sheetType||'';}
+function sheetTypeBadge(src){
+  const st=getSheetType(src);
+  if(!st) return '';
+  const clr=SHEET_TYPE_COLORS[st]||'#999';
+  return `<span style="font-size:.62rem;padding:2px 8px;border-radius:8px;background:${clr}22;color:${clr};border:1px solid ${clr}55;font-weight:600;white-space:nowrap">${st}</span>`;
 }
 function doPostLoadRender(){
   refreshStats();updateTabCounts();
@@ -1358,7 +1435,15 @@ function extractMaterial(rows){const matRow=rows.find(r=>r.text.includes('kg/m3'
 function groupIntoRecords(rows,gap=25){if(!rows.length) return[];const sorted=[...rows].sort((a,b)=>b.y-a.y);const recs=[];let cur=[sorted[0]];for(let i=1;i<sorted.length;i++){if(cur[cur.length-1].y-sorted[i].y>gap){recs.push([...cur]);cur=[sorted[i]];}else cur.push(sorted[i]);}if(cur.length) recs.push(cur);return recs;}
 function extractPartFromRecord(record){const allText=record.map(r=>r.text).join(' ');let alias=null;const fullM=allText.match(/([A-Za-z0-9]{4,}\(\d+\))/);if(fullM){alias=fullM[1];}else{for(const row of record){const prefM=row.text.match(/^([A-Za-z0-9]{5,})(\s|$)/);if(prefM){for(const other of record){if(other===row) continue;const sufM=other.text.match(/^\((\d+)\)/);if(sufM){alias=prefM[1]+'('+sufM[1]+')';break;}}}if(alias) break;}}if(!alias) return null;const cntM=allText.match(/(\d+)\s+(\d+)\s+\d+\.\d{3}\s*m\s+\d+\.\d{3}\s*kg/);if(!cntM) return null;return{alias,pcs:parseInt(cntM[2]),geoFile:null,drawingName:'',imageDataUrl:null};}
 async function cropAndAttachImages(page,records,partsArr,pageH){const scale=2;const vp=page.getViewport({scale});const cv=document.createElement('canvas');cv.width=vp.width;cv.height=vp.height;const ctx=cv.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,cv.width,cv.height);await page.render({canvasContext:ctx,viewport:vp}).promise;let nameX=200;for(const rec of records)for(const row of rec)for(const item of row.items){const x=item.transform[4];if(/^[A-Za-z0-9]/.test(item.str)&&x>100&&x<220) nameX=Math.min(nameX,x);}const imgL=Math.round(38*scale);const imgR=Math.round((nameX-4)*scale);const sorted=[...records].sort((a,b)=>Math.max(...b.map(r=>r.y))-Math.max(...a.map(r=>r.y)));for(let i=0;i<sorted.length;i++){const rec=sorted[i];const part=extractPartFromRecord(rec);if(!part) continue;const recMaxY=Math.max(...rec.map(r=>r.y));const recMinY=Math.min(...rec.map(r=>r.y));const ct=Math.max(0,Math.round((pageH-(recMaxY+22))*scale));const cb=Math.min(cv.height,Math.round((pageH-(recMinY-36))*scale));const w=Math.max(1,imgR-imgL);const h=Math.max(1,cb-ct);if(w<=0||h<=0) continue;const crop=document.createElement('canvas');crop.width=w;crop.height=h;const cctx=crop.getContext('2d');cctx.fillStyle='#fff';cctx.fillRect(0,0,w,h);cctx.drawImage(cv,imgL,ct,w,h,0,0,w,h);const stored=partsArr.find(p=>p.alias===part.alias);if(stored) stored.imageDataUrl=crop.toDataURL('image/png');}}
-async function parseBodorPDF(pdf){const machine='Bodor';let jobNum='';const results=[];let cur=null;let inParts=false;const thumbs={};for(let pn=1;pn<=pdf.numPages;pn++){const page=await pdf.getPage(pn);const tc=await page.getTextContent();const rows=groupRows(tc.items);if(!jobNum) for(const r of rows){const m=r.text.match(/JobNum:\s*(\S+)/);if(m){jobNum=m[1];break;}}const rHead=rows.find(r=>/^Result\d+$/.test(r.text.trim()));if(rHead){if(cur) results.push(cur);const rNum=rHead.text.match(/(\d+)/)[1];cur={type:'bodor',machine,source:jobNum||'?',jobNum,resultNum:parseInt(rNum),programName:`Result${rNum}`,nestName:jobNum||'?',plateNum:'',sheetMaterial:'',numOfSheet:0,parts:[],thumbnail:null};inParts=false;try{const vp=page.getViewport({scale:.55});const cv=document.createElement('canvas');cv.width=vp.width;cv.height=vp.height;await page.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise;thumbs[rNum]=cv.toDataURL('image/jpeg',.75);}catch(_){}}if(!cur) continue;if(!cur.plateNum) for(const r of rows){const m=r.text.match(/PlateNum:\s*(\S+)/);if(m){cur.plateNum=m[1];break;}}if(!cur.sheetMaterial){const mat=extractMaterial(rows);if(mat){cur.sheetMaterial=mat.sheetSize;cur.numOfSheet=mat.numOfSheet;}}if(!inParts){const hdr=rows.find(r=>r.text.includes('PartName')&&r.text.includes('NestedCount'));if(hdr) inParts=true;}if(inParts){const pageRows=rows.filter(r=>{const t=r.text.trim();return t&&!/^Page\s+\d+$/.test(t)&&!t.includes('PartName')&&!t.includes('PartImage');});const records=groupIntoRecords(pageRows);for(const rec of records){const part=extractPartFromRecord(rec);if(part&&!cur.parts.find(p=>p.alias===part.alias)) cur.parts.push(part);}if(records.length>0){const pageH=page.getViewport({scale:1}).height;await cropAndAttachImages(page,records,cur.parts,pageH);}}}if(cur) results.push(cur);results.forEach(r=>{r.thumbnail=thumbs[String(r.resultNum)]||null;});return{jobNum,results};}
+async function parseBodorPDF(pdf){const machine='Bodor';let jobNum='';const results=[];let cur=null;let inParts=false;const thumbs={};for(let pn=1;pn<=pdf.numPages;pn++){const page=await pdf.getPage(pn);const tc=await page.getTextContent();const rows=groupRows(tc.items);if(!jobNum) for(const r of rows){const m=r.text.match(/JobNum:\s*(\S+)/);if(m){jobNum=m[1];break;}}const rHead=rows.find(r=>/^Result\d+$/.test(r.text.trim()));if(rHead){if(cur) results.push(cur);const rNum=rHead.text.match(/(\d+)/)[1];cur={type:'bodor',machine,source:jobNum||'?',jobNum,resultNum:parseInt(rNum),programName:`Result${rNum}`,nestName:jobNum||'?',plateNum:'',sheetMaterial:'',numOfSheet:0,parts:[],thumbnail:null,cutMinutes:0};inParts=false;try{const vp=page.getViewport({scale:.55});const cv=document.createElement('canvas');cv.width=vp.width;cv.height=vp.height;await page.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise;thumbs[rNum]=cv.toDataURL('image/jpeg',.75);}catch(_){}}if(!cur) continue;
+  // TotalTime: rând cu procente + timpi (ex: "56.049% 43.95% 0.000 kg 80.974 m 00:18:23 0 00:00:00 00:37:13")
+  if(cur&&!cur.cutMinutes){
+    const tmAll=[...r.text.matchAll(/(\d{1,2}):(\d{2}):(\d{2})/g)];
+    if(tmAll.length&&/%/.test(r.text)){
+      const last=tmAll[tmAll.length-1];
+      cur.cutMinutes=Math.round((parseInt(last[1])*60+parseInt(last[2])+parseInt(last[3])/60)*10)/10;
+    }
+  }if(!cur.plateNum) for(const r of rows){const m=r.text.match(/PlateNum:\s*(\S+)/);if(m){cur.plateNum=m[1];break;}}if(!cur.sheetMaterial){const mat=extractMaterial(rows);if(mat){cur.sheetMaterial=mat.sheetSize;cur.numOfSheet=mat.numOfSheet;}}if(!inParts){const hdr=rows.find(r=>r.text.includes('PartName')&&r.text.includes('NestedCount'));if(hdr) inParts=true;}if(inParts){const pageRows=rows.filter(r=>{const t=r.text.trim();return t&&!/^Page\s+\d+$/.test(t)&&!t.includes('PartName')&&!t.includes('PartImage');});const records=groupIntoRecords(pageRows);for(const rec of records){const part=extractPartFromRecord(rec);if(part&&!cur.parts.find(p=>p.alias===part.alias)) cur.parts.push(part);}if(records.length>0){const pageH=page.getViewport({scale:1}).height;await cropAndAttachImages(page,records,cur.parts,pageH);}}}if(cur) results.push(cur);results.forEach(r=>{r.thumbnail=thumbs[String(r.resultNum)]||null;});return{jobNum,results};}
 
 
 /* ══ L3030 PDF Parser ══ */
@@ -1419,7 +1504,9 @@ async function parseL3030PDF(pdf, filename){
     if(row.rawText?.startsWith('mainprogram')) continue; // header
     const m=row.text.match(/^(\S+)\s+(\d+)\s+/);
     if(!m) continue;
-    programs.push({name:m[1],rpt:parseInt(m[2]),sheetMaterial:fmtSheetL3030(row.text),_rawSheetText:row.text});
+    const timeMatch=row.text.match(/(\d{1,2})\s*:\s*(\d{2})\s*:\s*(\d{2})\s*$/);
+    const cutMins=timeMatch?(parseInt(timeMatch[1])*60+parseInt(timeMatch[2])+parseInt(timeMatch[3])/60):0;
+    programs.push({name:m[1],rpt:parseInt(m[2]),sheetMaterial:fmtSheetL3030(row.text),_rawSheetText:row.text,cutMinutes:Math.round(cutMins*10)/10});
   }
   if(!programs.length) return [];
 
@@ -1593,13 +1680,25 @@ function renderNesturi(){
   }
 
   // 2-column layout
+  // Timpi totali de debitare per coloană
+  const fmtMins=m=>{if(!m) return '0min';const h=Math.floor(m/60);const mm=Math.round(m%60);return h?`${h}h ${mm}min`:`${mm}min`;};
+  const timeL=l3030Sorted.reduce((s,p)=>s+(p.cutMinutes||0),0);
+  const timeB=bodorSorted.reduce((s,p)=>s+(p.cutMinutes||0),0);
+  const timeLPrio=l3030Sorted.filter(p=>getPriority(p.source)>0).reduce((s,p)=>s+(p.cutMinutes||0),0);
+  const timeBPrio=bodorSorted.filter(p=>getPriority(p.source)>0).reduce((s,p)=>s+(p.cutMinutes||0),0);
+  const timeBadge=(tot,prio,clr)=>`
+    <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
+      <span title="Timp total debitare" style="font-size:.68rem;font-family:var(--mono);background:${clr}18;color:${clr};border:1px solid ${clr}44;border-radius:10px;padding:2px 9px;font-weight:700">⏱ ${fmtMins(tot)}</span>
+      ${prio>0?`<span title="Din care prioritizate" style="font-size:.65rem;font-family:var(--mono);background:rgba(240,160,0,.12);color:var(--accent);border:1px solid rgba(240,160,0,.35);border-radius:10px;padding:2px 8px;font-weight:700">⭐ ${fmtMins(prio)}</span>`:''}
+    </span>`;
+
   container.innerHTML=`<div class="nest-cols">
     <div>
-      <div class="nest-col-head l3030"><span>⚡ L3030</span><span style="font-size:.68rem;font-weight:400;color:var(--muted)">${l3030Sorted.length} progr. · ${l3030Sorted.reduce((s,p)=>s+effectiveNec(p),0)} coli</span></div>
+      <div class="nest-col-head l3030"><span>⚡ L3030</span><span style="font-size:.68rem;font-weight:400;color:var(--muted)">${l3030Sorted.length} progr. · ${l3030Sorted.reduce((s,p)=>s+effectiveNec(p),0)} coli</span>${timeBadge(timeL,timeLPrio,'#00d4a0')}</div>
       <div id="col-l3030"></div>
     </div>
     <div>
-      <div class="nest-col-head bodor"><span>🔵 Bodor</span><span style="font-size:.68rem;font-weight:400;color:var(--muted)">${bodorSorted.length} progr. · ${bodorSorted.reduce((s,p)=>s+effectiveNec(p),0)} coli</span></div>
+      <div class="nest-col-head bodor"><span>🔵 Bodor</span><span style="font-size:.68rem;font-weight:400;color:var(--muted)">${bodorSorted.length} progr. · ${bodorSorted.reduce((s,p)=>s+effectiveNec(p),0)} coli</span>${timeBadge(timeB,timeBPrio,'#4d9bff')}</div>
       <div id="col-bodor"></div>
     </div>
   </div>`;
@@ -1737,10 +1836,11 @@ function renderCard(data,container,isAdmin){
     </span>
     <span class="mbadge ${isL?'mb-l':'mb-b'}">${isL?'⚡':'🔵'}</span>
     ${sn?`<span style="font-family:var(--mono);font-size:.69rem;color:var(--accent);background:rgba(240,160,0,.08);border:1px solid rgba(240,160,0,.3);border-radius:5px;padding:2px 6px;flex-shrink:0">📋 ${esc(sn)}</span>`:''}
+    ${sheetTypeBadge(data.source)}
     <span class="card-prog">${esc(prog)}</span>
     <span class="card-pill">${displaySheet(data.sheetMaterial)}</span>
     <button class="card-del" onclick="event.stopPropagation();deleteNest('${esc(data.source)}')" title="Șterge">🗑</button>
-    <span class="card-rpt"><strong id="cnec_${safeId(ok)}">${currentNec}</strong> coli · <strong style="color:var(--ok)">${parts.reduce((s,x)=>s+Math.round((x.pcs||0)*multiplier),0)}</strong> buc</span>
+    <span class="card-rpt"><strong id="cnec_${safeId(ok)}">${currentNec}</strong> coli · <strong style="color:var(--ok)">${parts.reduce((s,x)=>s+Math.round((x.pcs||0)*multiplier),0)}</strong> buc${data.cutMinutes?` · <strong style="color:var(--info)">⏱ ${Math.round(data.cutMinutes)}min</strong>`:''}</span>
     <span class="chevron">▾</span></div>
   <div class="card-body">
     <div class="info-row">
@@ -1794,7 +1894,7 @@ function renderPicking(){
   function nestRow(g,gk){if(g.sk) ensurePick(g.sk);const d=pickingData[g.sk]||{sheetCode:'',reservedQty:'',reservedAt:null,surplusMotiv:''};const sch=schedNr(g.source);
     const prio=getPriority(g.source);
     return `<tr>
-      <td style="text-align:center">${prio?`<span style="display:inline-block;min-width:26px;height:26px;line-height:26px;border-radius:50%;background:rgba(240,160,0,.15);color:var(--accent);font-weight:700;font-size:.8rem;border:1px solid rgba(240,160,0,.4)">${prio}</span>`:'<span style="color:var(--dim)">—</span>'}</td><td><span class="mbadge ${g.type==='l3030'?'mb-l':'mb-b'}" style="font-size:.6rem">${g.type==='l3030'?'⚡':'🔵'}</span></td>
+      <td style="text-align:center">${prio?`<span style="display:inline-block;min-width:26px;height:26px;line-height:26px;border-radius:50%;background:rgba(240,160,0,.15);color:var(--accent);font-weight:700;font-size:.8rem;border:1px solid rgba(240,160,0,.4)">${prio}</span>`:'<span style="color:var(--dim)">—</span>'}<div style="margin-top:2px">${sheetTypeBadge(g.source)}</div></td><td><span class="mbadge ${g.type==='l3030'?'mb-l':'mb-b'}" style="font-size:.6rem">${g.type==='l3030'?'⚡':'🔵'}</span></td>
       <td style="font-family:var(--mono);font-size:.78rem;font-weight:600">${esc(g.source)}</td>
       <td style="font-family:var(--mono);font-size:.76rem">${displaySheet(g.sheetMaterial)}</td>
       <td style="font-size:.76rem;color:var(--muted)">${g.machine}</td>
@@ -1984,7 +2084,15 @@ function rapDebInput(el){
   const wasComplete=isCompleted({numOfSheet:nec,source:ok.split('|||')[0],programName:ok.split('|||')[1]});
   opData[ok].coliDebitate=el.value;if(val<nec) opData[ok].motivDepasire='';
   el.dataset.prev=el.value;
-  if(wasComplete!==(val>0&&val>=nec)){setTimeout(()=>renderRaportare(),50);return;}
+  if(wasComplete!==(val>0&&val>=nec)){
+    el.addEventListener('blur',()=>{
+      renderRaportare();
+      if(val>0&&val>=nec){
+        const src=ok.split('|||')[0];
+        setTimeout(()=>autoDeleteCompletedSource(src),1200);
+      }
+    },{once:true});
+  }
   const clr=val===0?'var(--dim)':val===nec?'var(--ok)':'var(--accent)';
   const pct=nec>0?Math.min(100,Math.round(val/nec*100)):0;
   const fill=document.getElementById('pbf-'+sid);if(fill){fill.style.width=pct+'%';fill.style.background=clr;}
@@ -2120,8 +2228,11 @@ function ocConfirm(){
   const{ok,value}=ocPending;
   if(!opData[ok]) opData[ok]={coliDebitate:'',motivDepasire:'',completedAt:null,numOfSheetOverride:null};
   opData[ok].coliDebitate=value;opData[ok].motivDepasire=reason;opData[ok].completedAt=new Date().toISOString();
-  document.getElementById('oc-modal').style.display='none';ocPending=null;
+  document.getElementById('oc-modal').style.display='none';
+  const src=ok.split('|||')[0];
+  ocPending=null;
   if(typeof renderRaportare==='function') renderRaportare();
+  setTimeout(()=>{if(typeof autoDeleteCompletedSource==='function') autoDeleteCompletedSource(src);},1200);
 }
 
 function ocCancel(){
@@ -2580,7 +2691,7 @@ async function loadAllData(){
       });
       newProgs.push(...progs);
       ensureSchedule(n.source);
-      scheduleData[n.source]={schedNo:n.schedule_no||'',priority:n.priority||0};
+      scheduleData[n.source]={schedNo:n.schedule_no||'',priority:n.priority||0,sheetType:n.sheet_type||''};
     });
     console.log('[NV] Loaded from DB: nests=',nests.length,'programs=',newProgs.length);
     if(newProgs.length>0){
@@ -2624,6 +2735,15 @@ async function loadAllData(){
   console.log('[NV] loadAllData complete: allPrograms=',allPrograms.length,
     'sources=',new Set(allPrograms.map(p=>p.source)).size,
     'sample prog:',allPrograms[0]?.programName||allPrograms[0]?.source||'none');
+  // Config etichete din Supabase (dacă există, are prioritate față de localStorage)
+  try{
+    const{data:lc}=await sb.from('app_settings').select('value').eq('key','label_config').maybeSingle();
+    if(lc?.value&&Array.isArray(lc.value.fields)){
+      Object.assign(labelConfig,lc.value);
+      localStorage.setItem('nv_label_cfg',JSON.stringify(labelConfig));
+    }
+  }catch(_){}
+
   restoreImagesFromCache();
   refreshStats();updateTabCounts();
   renderNesturi();
@@ -2693,7 +2813,7 @@ async function saveNestToSupabase(source,programs){
   }));
   const first=programs[0];
   const payload={source,machine:first?.machine||'',job_name:first?.nestName||source,
-    schedule_no:getSchedNo(source),priority:getPriority(source),
+    schedule_no:getSchedNo(source),priority:getPriority(source),sheet_type:getSheetType(source),
     programs:progsCleaned,imported_by:currentUser.id,
     imported_at:new Date().toISOString()};
 
@@ -3255,7 +3375,29 @@ initApp();
 
 
 <script>
+
 /* ══ LABEL SYSTEM — Config, Print Queue, A4 Layout ══ */
+
+/* ══ PERSISTENȚĂ CONFIG ETICHETE ══ */
+function saveLabelConfigPersist(){
+  try{localStorage.setItem('nv_label_cfg',JSON.stringify(labelConfig));}catch(_){}
+  // Salvează și în Supabase pentru sincronizare cross-device
+  if(typeof sb!=='undefined'&&sb&&typeof currentUser!=='undefined'&&currentUser){
+    sb.from('app_settings').upsert({key:'label_config',value:labelConfig,updated_by:currentUser.id,updated_at:new Date().toISOString()},{onConflict:'key'})
+      .then(({error})=>{if(error)console.warn('[NV] labelConfig save:',error.message);});
+  }
+}
+function loadLabelConfigPersist(){
+  try{
+    const stored=localStorage.getItem('nv_label_cfg');
+    if(stored){
+      const parsed=JSON.parse(stored);
+      if(parsed&&Array.isArray(parsed.fields)) Object.assign(labelConfig,parsed);
+    }
+  }catch(_){}
+}
+loadLabelConfigPersist();
+
 
 // ── Render o etichetă ca HTML ──
 function renderLabelHtml(row, cfg, qrId){
@@ -3363,10 +3505,10 @@ function saveLabelCfg(){
   labelConfig.qrSizePx=parseInt(document.getElementById('lcfg-qr').value)||90;
   labelConfig.showQr=document.getElementById('lcfg-showqr').checked;
   labelConfig.perPage=document.getElementById('lcfg-perpage').value;
-  // Fields already updated in-place via lfSet
+  saveLabelConfigPersist(); // localStorage + Supabase
   closeLabelCfg();
   if(typeof renderStocuri==='function') renderStocuri();
-  showToast('✓ Configurare etichetă salvată');
+  showToast('✓ Configurare etichetă salvată permanent');
 }
 
 // ── Print Queue ──
@@ -3818,7 +3960,7 @@ function renderRaportare(){
     const sid=safeId(ok);const isL=p.type==='l3030';
     return `<tr class="data-row">
       <td><div class="tdi" style="text-align:center">${getPriority(p.source)?`<span style="display:inline-block;min-width:22px;height:22px;line-height:22px;border-radius:50%;background:rgba(240,160,0,.15);color:var(--accent);font-weight:700;font-size:.72rem;border:1px solid rgba(240,160,0,.4)">${getPriority(p.source)}</span>`:'—'}</div></td>
-      <td><div class="tdi" style="font-family:var(--mono);font-size:.73rem;font-weight:600">${esc(p.programName||p.source||'')}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.73rem;font-weight:600">${esc(p.programName||p.source||'')}<div style="margin-top:2px">${sheetTypeBadge(p.source)}</div></div></td>
       <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem">${displaySheet(p.sheetMaterial)}</div></td>
       <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem;color:var(--muted)">${esc(pickingData[sk]?.sheetCode||'')}</div></td>
       <td onclick="event.stopPropagation()"><div class="tdi" style="min-width:150px">
