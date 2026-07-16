@@ -416,6 +416,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 
 </head>
 <body>
@@ -717,8 +718,7 @@ let printQueue=[];
 
 // ── Variabile Schimb ──
 let shiftState={active:false,machine:'',shiftLabel:'',loginTime:null,events:[],timerRef:null};
-let shiftMachine='';
-let rapViewMachine=''; // mașina selectată pentru schimb
+let shiftMachine=''; // mașina selectată pentru schimb + Realizări (unificat)
 
 // ── Variabile Storage Supabase ──
 let storageUsedBytes=0;
@@ -1765,11 +1765,28 @@ function statStop(){
   stat.active=null;stat.runStart=Date.now();
   renderStatPanel();renderStatTable();
 }
-function statStartEvt(type){if(stat.active) return;const t=STAT_TYPES.find(x=>x.id===type);if(!t) return;if(t.requiresDesc){pendingStatType=type;const p=document.getElementById('def-desc-panel');if(p){p.style.display='block';p.querySelector('.def-desc-input')?.focus();}return;}stat.runAccum+=Date.now()-(stat.runStart||Date.now());stat.runStart=null;stat.active={type,label:t.label,icon:t.icon,startTime:Date.now(),desc:''};renderStatPanel();}
+function statStartEvt(type){if(!shiftState.active){alert('Pornește schimbul mai întâi!');return;}if(stat.active) return;const t=STAT_TYPES.find(x=>x.id===type);if(!t) return;if(t.requiresDesc){pendingStatType=type;const p=document.getElementById('def-desc-panel');if(p){p.style.display='block';p.querySelector('.def-desc-input')?.focus();}return;}stat.runAccum+=Date.now()-(stat.runStart||Date.now());stat.runStart=null;stat.active={type,label:t.label,icon:t.icon,startTime:Date.now(),desc:''};renderStatPanel();}
 function statStartDef(){const type=pendingStatType||'DEF';const desc=document.getElementById('def-desc')?.value.trim()||'';document.getElementById('def-desc-panel').style.display='none';document.getElementById('def-desc').value='';pendingStatType=null;stat.runAccum+=Date.now()-(stat.runStart||Date.now());stat.runStart=null;const t=STAT_TYPES.find(x=>x.id===type)||STAT_TYPES.find(x=>x.id==='DEF');stat.active={type,label:t.label,icon:t.icon,startTime:Date.now(),desc};renderStatPanel();}
 function statCancelDef(){document.getElementById('def-desc-panel').style.display='none';document.getElementById('def-desc').value='';}
 function toggleStatPanel(){stat.panelOpen=!stat.panelOpen;const body=document.getElementById('stat-panel-body');if(body) body.style.display=stat.panelOpen?'block':'none';const ch=document.querySelector('.stat-chevron');if(ch) ch.textContent=stat.panelOpen?'▾':'▸';}
-function renderStatPanel(){const el=document.getElementById('stat-panel');if(!el) return;const isActive=!!stat.active;const btns=STAT_TYPES.map(t=>`<button class="stat-btn ${t.btnCls}" onclick="statStartEvt('${t.id}')" ${isActive?'disabled':''}>${t.icon} ${t.label}</button>`).join('');const statusHtml=isActive?`<div class="stat-status stopped"><div class="stat-dot red"></div><div><div class="stat-status-text">${stat.active.icon} ${stat.active.label}${stat.active.desc?`: <em>${esc(stat.active.desc)}</em>`:''}</div></div><div class="stat-timer-big" id="stat-timer">${formatDur(activeMs())}</div><button class="stat-btn stop-btn" onclick="statStop()">⏹ STOP</button></div>`:`<div class="stat-status running"><div class="stat-dot green"></div><div class="stat-status-text">ÎN FUNCȚIUNE</div><div class="stat-timer-big" id="run-timer">${formatDur(runningMs())}</div></div>`;el.innerHTML=`<div class="stat-panel-head" onclick="toggleStatPanel()"><span>📡</span><span class="stat-panel-title">Monitorizare Linie</span><span class="stat-chevron" style="margin-left:auto;color:var(--dim)">${stat.panelOpen?'▾':'▸'}</span></div><div id="stat-panel-body" style="display:${stat.panelOpen?'block':'none'}"><div class="stat-panel-body">${statusHtml}<div class="def-desc-panel" id="def-desc-panel"><label>🔧 Descriere:</label><textarea class="def-desc-input" id="def-desc" placeholder="ex: Blocaj mese…"></textarea><div class="def-desc-btns"><button class="btn-sm btn-start-def" onclick="statStartDef()">▶ Start</button><button class="btn-sm btn-cancel-def" onclick="statCancelDef()">Anulează</button></div></div>${!isActive?`<div class="stat-btns">${btns}</div>`:''}<div id="stat-log-area"></div></div></div>`;renderStatTable();startStatTimer();}
+function renderStatPanel(){
+  const el=document.getElementById('stat-panel');if(!el) return;
+  const isActive=!!stat.active;
+  const shiftOn=shiftState.active;
+  if(!shiftOn){
+    // Fără schimb pornit — monitorizarea liniei e dezactivată (contorul e legat de Pornește Schimbul)
+    el.innerHTML=`<div class="stat-panel-head"><span>📡</span><span class="stat-panel-title">Monitorizare Linie</span></div>
+      <div style="padding:12px 16px;font-size:.78rem;color:var(--dim);text-align:center">
+        ⏸ Pornește schimbul pentru a activa monitorizarea și cronometrul de funcționare.
+      </div>`;
+    return;
+  }
+  const btns=STAT_TYPES.map(t=>`<button class="stat-btn ${t.btnCls}" onclick="statStartEvt('${t.id}')" ${isActive?'disabled':''}>${t.icon} ${t.label}</button>`).join('');
+  const statusHtml=isActive
+    ?`<div class="stat-status stopped"><div class="stat-dot red"></div><div><div class="stat-status-text">${stat.active.icon} ${stat.active.label}${stat.active.desc?`: <em>${esc(stat.active.desc)}</em>`:''}</div></div><div class="stat-timer-big" id="stat-timer">${formatDur(activeMs())}</div><button class="stat-btn stop-btn" onclick="statStop()">⏹ STOP</button></div>`
+    :`<div class="stat-status running"><div class="stat-dot green"></div><div class="stat-status-text">ÎN FUNCȚIUNE</div><div class="stat-timer-big" id="run-timer">${formatDur(shiftRunningMs())}</div></div>`;
+  el.innerHTML=`<div class="stat-panel-head" onclick="toggleStatPanel()"><span>📡</span><span class="stat-panel-title">Monitorizare Linie</span><span class="stat-chevron" style="margin-left:auto;color:var(--dim)">${stat.panelOpen?'▾':'▸'}</span></div><div id="stat-panel-body" style="display:${stat.panelOpen?'block':'none'}"><div class="stat-panel-body">${statusHtml}<div class="def-desc-panel" id="def-desc-panel"><label>🔧 Descriere:</label><textarea class="def-desc-input" id="def-desc" placeholder="ex: Blocaj mese…"></textarea><div class="def-desc-btns"><button class="btn-sm btn-start-def" onclick="statStartDef()">▶ Start</button><button class="btn-sm btn-cancel-def" onclick="statCancelDef()">Anulează</button></div></div>${!isActive?`<div class="stat-btns">${btns}</div>`:''}<div id="stat-log-area"></div></div></div>`;renderStatTable();startStatTimer();
+}
 function renderStatTable(){const el=document.getElementById('stat-log-area');if(!el) return;if(!stat.log.length){el.innerHTML='<div class="stat-log-empty">Niciun eveniment.</div>';return;}const rows=stat.log.map(e=>`<tr><td><span class="mbadge" style="font-size:.6rem;${getStatColor(e.type)}">${e.icon} ${e.label}</span></td><td style="font-size:.75rem;color:var(--muted)">${e.desc||'—'}</td><td style="font-family:var(--mono);font-size:.73rem">${formatTime(e.startTime)}</td><td style="font-family:var(--mono);font-size:.73rem">${formatTime(e.endTime)}</td><td style="font-family:var(--mono);font-weight:700;font-size:.8rem;color:var(--accent)">${formatDur(e.duration)}</td></tr>`).join('');el.innerHTML=`<div class="stat-log-wrap"><table class="stat-log"><thead><tr><th>Tip</th><th>Descriere</th><th>Start</th><th>Stop</th><th>Durată</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
 function getStatColor(type){const colors={CTC:'background:rgba(240,160,0,.12);color:var(--accent)',MP:'background:rgba(77,155,255,.12);color:var(--bodor)',PROG:'background:rgba(123,97,255,.12);color:var(--info)',DEF:'background:rgba(239,83,80,.1);color:var(--warn)',VR:'background:rgba(255,179,0,.1);color:#ffb300'};return colors[type]||'';}
 function formatTime(ts){return new Date(ts).toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
@@ -1890,7 +1907,11 @@ function renderPicking(){
       <td>${sheetTypeBadge(firstSrc)}</td>
       <td><div style="font-size:.72rem;color:var(--muted)">${machines}</div></td>
       <td><div style="font-family:var(--mono);font-size:.76rem;color:var(--accent)">${schedules||'<span style="color:var(--dim)">—</span>'}</div></td>
-      <td><input type="text" class="pk-input code" value="${esc(d.sheetCode)}" placeholder="ex: MSS100236" data-key="${key}" oninput="pkCode(this)"></td>
+      <td><div style="display:flex;gap:4px;align-items:center">
+        <input type="text" class="pk-input code" id="pkc-${safeId(key)}" value="${esc(d.sheetCode)}" placeholder="ex: MSS100236" data-key="${key}" oninput="pkCode(this)" style="flex:1">
+        <button onclick="openQrScanner('${key.replace(/'/g,"\\'")}')" title="Scanează codul QR al tablei"
+          style="background:var(--surf3);border:1px solid var(--border2);border-radius:5px;padding:5px 8px;cursor:pointer;color:var(--accent);font-size:.85rem;flex-shrink:0">📷</button>
+      </div></td>
       <td style="text-align:center"><span class="nec-num">${need}</span></td>
       <td><input type="number" class="pk-input qty" value="${esc(d.reservedQty)}" min="0" data-key="${key}" oninput="pkRes(this)"></td>
       <td id="pkd-${safeId(key)}" style="text-align:center;font-family:var(--mono);font-size:.8rem">${diffHtml(need,d.reservedQty)}</td>
@@ -3786,10 +3807,8 @@ function shiftRunningMs(){
 }
 
 function startShift(){
-  const machEl=document.getElementById('rap-machine-sel');
+  if(!shiftMachine){alert('Selectează mașina mai întâi!');return;}
   const shiftEl=document.getElementById('rap-shift-sel');
-  if(!machEl?.value){alert('Selectează mașina mai întâi!');return;}
-  shiftMachine=machEl.value;
   const sIdx=parseInt(shiftEl?.value||'0');
   const shift=SHIFTS[sIdx]||detectCurrentShift();
   shiftState={
@@ -3810,8 +3829,13 @@ function endShift(){
   if(!shiftState.active) return;
   if(!confirm('Finalizezi schimbul? Datele vor fi salvate în baza de date.')) return;
   clearInterval(shiftState.timerRef);
-  // Collect events from stationari log
-  shiftState.events=[...stat.log];
+  // Collect events from stationari log + adaugă Pauza de masă (20 min) ca stationare fixă în raport
+  const lunchEnd=Date.now();
+  const lunchStart=lunchEnd-LUNCH_MS;
+  shiftState.events=[...stat.log,{
+    type:'LUNCH',label:'Pauză masă',icon:'🍽',desc:'',
+    startTime:lunchStart,endTime:lunchEnd,duration:LUNCH_MS
+  }];
   // Collect realizations
   const raps=allPrograms.filter(p=>p.machine===shiftState.machine).map(p=>{
     const ok=opKey(p);const d=opData[ok]||{};
@@ -3880,7 +3904,6 @@ function renderRaportare(){
 
   // Detectăm mașinile disponibile
   const machines=[...new Set(allPrograms.map(p=>p.machine))].filter(Boolean);
-  if(!rapViewMachine&&machines.length) rapViewMachine=machines[0];
   if(!shiftMachine&&machines.length) shiftMachine=machines[0];
 
   const curShift=detectCurrentShift();
@@ -3970,7 +3993,7 @@ function renderRaportare(){
   // (render via renderStatPanel + renderVrPanel)
 
   // ── SECTIUNEA 3: REALIZĂRI pentru mașina selectată (butoane, actualizare instant) ──
-  const machine=rapViewMachine||shiftMachine;
+  const machine=shiftState.active?shiftState.machine:shiftMachine;
   const machProgs=allPrograms.filter(p=>p.machine===machine&&!isCompleted(p));
   const realizedProgs=allPrograms.filter(p=>p.machine===machine&&isCompleted(p));
 
@@ -4050,9 +4073,6 @@ function renderRaportare(){
       <span>⚙ Realizări — <span style="color:var(--accent)">${esc(machine||'—')}</span></span>
       <span style="font-size:.7rem;font-weight:400;color:var(--muted)">${machProgs.length} progr. · ${totNec} nec · <span style="color:var(--ok)">${totDeb} deb</span> · <span style="color:var(--info)">⏱ ${fmtCutMin(totTime)}</span></span>
     </div>
-    <div class="filter-bar" style="margin-bottom:8px">
-      <span class="lbl">Mașină:</span>${machBtns(rapViewMachine,'setRapViewMachine')}
-    </div>
     ${machProgs.length?`<div class="rap-wrap" style="overflow-x:auto"><table class="rap">
       <thead>${rapHeadRow}</thead>
       <tbody>${machProgs.map(buildRapRow).join('')}</tbody>
@@ -4067,8 +4087,7 @@ function renderRaportare(){
   renderVrPanel();
 }
 
-function setShiftMachineBtn(m){shiftMachine=m;rapViewMachine=m;renderRaportare();}
-function setRapViewMachine(m){rapViewMachine=m;renderRaportare();}
+function setShiftMachineBtn(m){shiftMachine=m;renderRaportare();}
 
 let _rapFieldTimer={};
 function rapFieldInput(el){
@@ -4194,6 +4213,7 @@ function nestSearchChange(v){
 <script>
 /* ══ VITEZĂ REDUSĂ — observație independentă, NU consumă timp de funcționare ══ */
 function toggleVR(){
+  if(!shiftState.active){alert('Pornește schimbul mai întâi!');return;}
   if(stat.vr.active){
     // Oprire: mută în vrLog cu durată
     const endTime=Date.now();
@@ -4309,6 +4329,123 @@ async function openShiftReportsModal(){
       </div>
     </div>`;
   }).join('');
+}
+</script>
+<!-- ══ QR SCANNER MODAL — Cod Tablă ══ -->
+<div id="qr-scan-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:3600;display:none;align-items:center;justify-content:center;padding:16px">
+  <div style="background:var(--surf);border:1px solid var(--border);border-radius:var(--r);width:min(440px,94vw);padding:16px;box-shadow:var(--sh)">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <h3 style="margin:0;font-size:.9rem;flex:1">📷 Scanează Cod Tablă</h3>
+      <button class="logout-btn" onclick="closeQrScanner()">✕</button>
+    </div>
+    <div style="position:relative;background:#000;border-radius:8px;overflow:hidden;aspect-ratio:1/1">
+      <video id="qr-video" style="width:100%;height:100%;object-fit:cover" playsinline muted></video>
+      <div style="position:absolute;inset:15%;border:2px solid rgba(240,160,0,.7);border-radius:8px;pointer-events:none"></div>
+    </div>
+    <div id="qr-scan-status" style="text-align:center;font-size:.75rem;color:var(--muted);margin-top:8px">Îndreaptă camera spre codul QR…</div>
+    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+      <label style="font-size:.72rem;color:var(--muted);display:block;margin-bottom:5px">Sau introdu manual codul:</label>
+      <div style="display:flex;gap:6px">
+        <input type="text" id="qr-manual-inp" class="pk-input code" style="flex:1" placeholder="ex: MSS100236">
+        <button class="auth-btn" style="max-width:100px;padding:8px 14px;font-size:.8rem" onclick="qrManualConfirm()">✓ OK</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+
+<script>
+/* ══ QR SCANNER — Cod Tablă (cameră telefon/tabletă) ══ */
+let _qrStream=null,_qrScanKey=null,_qrRAF=null;
+
+async function openQrScanner(key){
+  _qrScanKey=key;
+  const overlay=document.getElementById('qr-scan-overlay');
+  const video=document.getElementById('qr-video');
+  const status=document.getElementById('qr-scan-status');
+  document.getElementById('qr-manual-inp').value='';
+  overlay.style.display='flex';
+  status.textContent='Se pornește camera…';
+  status.style.color='var(--muted)';
+
+  if(typeof jsQR==='undefined'){
+    try{
+      await new Promise((res,rej)=>{
+        const s=document.createElement('script');
+        s.src='https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
+        s.onload=res;s.onerror=()=>rej(new Error('jsQR CDN'));
+        document.head.appendChild(s);
+      });
+    }catch(e){status.textContent='⚠ Bibliotecă QR indisponibilă — folosește input manual.';status.style.color='var(--warn)';return;}
+  }
+
+  try{
+    _qrStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    video.srcObject=_qrStream;
+    await video.play();
+    status.textContent='Îndreaptă camera spre codul QR…';
+    _qrScanLoop();
+  }catch(e){
+    console.warn('[NV] Camera error:',e.message);
+    status.textContent='⚠ Camera indisponibilă ('+e.message+') — folosește input manual.';
+    status.style.color='var(--warn)';
+  }
+}
+
+function _qrScanLoop(){
+  const video=document.getElementById('qr-video');
+  if(!video||!_qrStream){return;}
+  if(video.readyState===video.HAVE_ENOUGH_DATA){
+    const cvs=document.createElement('canvas');
+    cvs.width=video.videoWidth;cvs.height=video.videoHeight;
+    const ctx=cvs.getContext('2d');
+    ctx.drawImage(video,0,0,cvs.width,cvs.height);
+    const imgData=ctx.getImageData(0,0,cvs.width,cvs.height);
+    try{
+      const code=jsQR(imgData.data,imgData.width,imgData.height);
+      if(code&&code.data){
+        qrScanSuccess(code.data);
+        return; // oprește loop-ul
+      }
+    }catch(_){}
+  }
+  _qrRAF=requestAnimationFrame(_qrScanLoop);
+}
+
+function qrScanSuccess(text){
+  const status=document.getElementById('qr-scan-status');
+  status.textContent='✓ Cod detectat: '+text;
+  status.style.color='var(--ok)';
+  applyQrToPicking(text);
+  setTimeout(()=>closeQrScanner(),700);
+}
+
+function qrManualConfirm(){
+  const val=document.getElementById('qr-manual-inp').value.trim();
+  if(!val) return;
+  applyQrToPicking(val);
+  closeQrScanner();
+}
+
+function applyQrToPicking(code){
+  if(!_qrScanKey) return;
+  // Codul QR poate conține date multiple separate cu | — luăm primul segment ca și cod tablă
+  const cleanCode=code.split('|')[0].trim();
+  ensurePick(_qrScanKey);
+  pickingData[_qrScanKey].sheetCode=cleanCode;
+  const inp=document.getElementById('pkc-'+safeId(_qrScanKey));
+  if(inp) inp.value=cleanCode;
+  if(typeof savePickingToSupabase==='function') savePickingToSupabase(_qrScanKey);
+  if(typeof renderPicking==='function') renderPicking();
+  showToast('✓ Cod tablă setat: '+cleanCode);
+}
+
+function closeQrScanner(){
+  document.getElementById('qr-scan-overlay').style.display='none';
+  if(_qrRAF) cancelAnimationFrame(_qrRAF);
+  if(_qrStream){_qrStream.getTracks().forEach(t=>t.stop());_qrStream=null;}
+  _qrScanKey=null;
 }
 </script>
 </body>
