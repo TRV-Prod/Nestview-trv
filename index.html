@@ -691,6 +691,7 @@ const expandedRows=new Set();
 
 // ── Variabile Nesturi / Sort ──
 let nestSort='priority';        // priority|newest|oldest|sheet|machine
+let nestSearch='';              // text căutare Nesturi
 
 // ── Variabile Stocuri ──
 let stockRecords=[];
@@ -716,7 +717,8 @@ let printQueue=[];
 
 // ── Variabile Schimb ──
 let shiftState={active:false,machine:'',shiftLabel:'',loginTime:null,events:[],timerRef:null};
-let shiftMachine=''; // mașina selectată pentru raportare
+let shiftMachine='';
+let rapViewMachine=''; // mașina selectată pentru schimb
 
 // ── Variabile Storage Supabase ──
 let storageUsedBytes=0;
@@ -729,9 +731,8 @@ const STAT_TYPES=[
   {id:'MP',  label:'Aștept materii prime',      icon:'📦', btnCls:'mp',  requiresDesc:false},
   {id:'PROG',label:'Aștept program',            icon:'💻', btnCls:'prog',requiresDesc:false},
   {id:'DEF', label:'Defecțiune',                icon:'🔧', btnCls:'def', requiresDesc:true,
-    descLabel:'🔧 Descriere defect:',      descPlaceholder:'ex: Blocaj mese, Alarmă temperatură, Motor avarie…'},
-  {id:'VR',  label:'Funcționez cu viteză redusă', icon:'🐌', btnCls:'vr', requiresDesc:true,
-    descLabel:'🐌 Motiv viteză redusă:',   descPlaceholder:'ex: Material dificil, Test parametri, Reglaj, Piesă complexă…'}
+    descLabel:'🔧 Descriere defect:',      descPlaceholder:'ex: Blocaj mese, Alarmă temperatură, Motor avarie…'}
+  // VR ('Funcționez cu viteză redusă') e independentă — vezi toggleVR() — NU blochează linia, e doar observație
 ];
 let pendingStatType=null;
 const stat={
@@ -740,7 +741,9 @@ const stat={
   runAccum:0,      // ms of running time accumulated
   runStart:Date.now(),
   timerRef:null,
-  panelOpen:true
+  panelOpen:true,
+  vr:{active:false,desc:'',startTime:null},  // Funcționez cu viteză redusă — OBSERVAȚIE, nu consumă timp
+  vrLog:[]          // [{desc,startTime,endTime,duration}]
 };
 
 /* ══ Utils ══ */
@@ -768,7 +771,8 @@ function sheetNeed(key){return allPrograms.filter(p=>sheetKey(p.sheetMaterial)==
 function opKey(p){return `${p.source}|||${p.programName}`;}
 function effectiveNec(p){const k=opKey(p);const ov=parseInt(opData[k]?.numOfSheetOverride);return(ov>0?ov:null)||(p.numOfSheet||0);}
 function ensurePick(key){if(!pickingData[key]) pickingData[key]={sheetCode:'',reservedQty:'',reservedAt:null,surplusMotiv:''};}
-function ensureOp(p){const k=opKey(p);if(!opData[k]) opData[k]={coliDebitate:'',motivDepasire:'',completedAt:null,numOfSheetOverride:null};}
+function ensureOp(p){const k=opKey(p);if(!opData[k]) opData[k]={coliDebitate:'',motivDepasire:'',completedAt:null,numOfSheetOverride:null,moId:'',timpProgram:'',itemNo:'',dimProgram:'',formatColi:'',codMovex:''};}
+function ensureOpKey(k){if(!opData[k]) opData[k]={coliDebitate:'',motivDepasire:'',completedAt:null,numOfSheetOverride:null,moId:'',timpProgram:'',itemNo:'',dimProgram:'',formatColi:'',codMovex:''};}
 function isCompleted(p){const d=opData[opKey(p)];const deb=parseInt(d?.coliDebitate)||0;return deb>0&&deb>=effectiveNec(p);}
 
 /* ══ Tab Management ══ */
@@ -1645,6 +1649,13 @@ function renderNesturi(){
       </div>
       <span id="storage-bar-lbl" style="color:var(--dim);white-space:nowrap;font-size:.67rem">—</span>
     </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <input type="text" id="nest-search-inp" data-filter-col="nest-search" value="${esc(nestSearch)}"
+        placeholder="🔍 Caută după Program, Schedule No., Sursă, Format tablă…"
+        style="flex:1;min-width:220px;background:var(--surf2);border:1px solid var(--border2);border-radius:7px;padding:7px 12px;color:var(--text);font-size:.8rem;outline:none"
+        oninput="nestSearchChange(this.value)">
+      ${nestSearch?'<button class="btn-sm btn-cancel-def" onclick="nestSearchChange(\'\')">✕ Șterge</button>':''}
+    </div>
     <div class="filter-bar" style="margin-bottom:8px">
       <span class="lbl">Ordonare:</span>
       ${sortOptions.map(o=>`<button class="filt-btn ${nestSort===o.v?'active':''}" onclick="setNestSort('${o.v}')">${o.l}</button>`).join('')}
@@ -1653,7 +1664,17 @@ function renderNesturi(){
 
   // Filter
   const isAdmin=typeof canManageUsers==='function'&&canManageUsers();
-  const all=nestFilter==='all'?[...allPrograms]:[...allPrograms.filter(p=>p.type===nestFilter)];
+  let all=nestFilter==='all'?[...allPrograms]:[...allPrograms.filter(p=>p.type===nestFilter)];
+  if(nestSearch.trim()){
+    const q=nestSearch.trim().toLowerCase();
+    all=all.filter(p=>
+      (p.programName||'').toLowerCase().includes(q)||
+      (p.source||'').toLowerCase().includes(q)||
+      (getSchedNo(p.source)||'').toLowerCase().includes(q)||
+      displaySheet(p.sheetMaterial).toLowerCase().includes(q)||
+      (p.machine||'').toLowerCase().includes(q)
+    );
+  }
   const l3030Sorted=sortNests(all.filter(p=>p.type==='l3030'));
   const bodorSorted=sortNests(all.filter(p=>p.type==='bodor'));
 
@@ -1863,8 +1884,10 @@ function renderPicking(){
     const machines=[...new Set(progs.map(p=>p.machine))].join(', ');
     const schedules=[...new Set(progs.map(p=>schedNr(p.source)).filter(Boolean))].join(', ');
     const progHint=progs.map(p=>`${p.programName}(×${effectiveNec(p)})`).join(', ');
+    const firstSrc=progs[0]?.source||'';
     return `<tr data-key="${key}" data-nec="${need}">
       <td><div class="pk-format">${displaySheet(allPrograms.find(p=>sheetKey(p.sheetMaterial)===key)?.sheetMaterial||'')}</div><div style="font-size:.67rem;color:var(--dim);margin-top:2px">${progHint}</div></td>
+      <td>${sheetTypeBadge(firstSrc)}</td>
       <td><div style="font-size:.72rem;color:var(--muted)">${machines}</div></td>
       <td><div style="font-family:var(--mono);font-size:.76rem;color:var(--accent)">${schedules||'<span style="color:var(--dim)">—</span>'}</div></td>
       <td><input type="text" class="pk-input code" value="${esc(d.sheetCode)}" placeholder="ex: MSS100236" data-key="${key}" oninput="pkCode(this)"></td>
@@ -1900,8 +1923,8 @@ function renderPicking(){
   el.innerHTML=`
     <div class="s-head">🗃 Picking Tablă</div>
     <div class="sc pk-wrap"><table class="pk">
-      <thead><tr><th>Format</th><th>Mașină</th><th>SCH #</th><th>Cod Tablă</th><th style="text-align:center">Necesar</th><th>Rezervat</th><th style="text-align:center">Δ</th><th>Status</th><th>Data rez.</th></tr></thead>
-      <tbody>${pkRows||'<tr><td colspan="9" style="padding:12px;text-align:center;color:var(--dim)">—</td></tr>'}</tbody>
+      <thead><tr><th>Format</th><th>Tip Tablă</th><th>Mașină</th><th>SCH #</th><th>Cod Tablă</th><th style="text-align:center">Necesar</th><th>Rezervat</th><th style="text-align:center">Δ</th><th>Status</th><th>Data rez.</th></tr></thead>
+      <tbody>${pkRows||'<tr><td colspan="10" style="padding:12px;text-align:center;color:var(--dim)">—</td></tr>'}</tbody>
     </table></div>
     <div class="s-head" style="margin-top:18px">📦 Nesturi în așteptare (${activeGroups.length})</div>
     <div class="filter-bar" style="margin-bottom:9px"><span class="lbl">Mașină:</span>${['all','l3030','bodor'].map(f=>`<button class="filt-btn pk-filt ${f!=='all'?f:''} ${pickFilter===f?'active':''}" data-f="${f}" onclick="setPickFilter('${f}')">${f==='all'?'Toate':f==='l3030'?'⚡ L3030':'🔵 Bodor'}</button>`).join('')}</div>
@@ -2710,7 +2733,7 @@ async function loadAllData(){
   if(pd) pd.forEach(d=>{pickingData[d.sheet_key]={sheetCode:d.sheet_code||'',reservedQty:String(d.reserved_qty||''),reservedAt:d.reserved_at,surplusMotiv:d.surplus_motiv||''};});
   // Operational
   const{data:od}=await sb.from('operational_data').select('*');
-  if(od) od.forEach(d=>{opData[d.op_key]={coliDebitate:String(d.coli_debitate||''),motivDepasire:d.motiv_depasire||'',numOfSheetOverride:d.num_sheet_override||null,completedAt:d.completed_at||null};});
+  if(od) od.forEach(d=>{opData[d.op_key]={coliDebitate:String(d.coli_debitate||''),motivDepasire:d.motiv_depasire||'',numOfSheetOverride:d.num_sheet_override||null,completedAt:d.completed_at||null,moId:d.mo_id||'',timpProgram:d.timp_program||'',itemNo:d.item_no||'',dimProgram:d.dim_program||'',formatColi:d.format_coli||'',codMovex:d.cod_movex||''};});
   // Stock locations
   const{data:sl}=await sb.from('stock_locations').select('*').order('sort_order');
   if(sl&&sl.length) stockLocations=sl;
@@ -2833,6 +2856,8 @@ async function saveOpToSupabase(key){
   await sb.from('operational_data').upsert({
     op_key:key,coli_debitate:parseInt(d.coliDebitate)||0,motiv_depasire:d.motivDepasire||'',
     num_sheet_override:d.numOfSheetOverride||null,completed_at:d.completedAt||null,
+    mo_id:d.moId||'',timp_program:d.timpProgram||'',item_no:d.itemNo||'',
+    dim_program:d.dimProgram||'',format_coli:d.formatColi||'',cod_movex:d.codMovex||'',
     updated_by:currentUser.id,updated_at:new Date().toISOString()
   },{onConflict:'op_key'});
 }
@@ -3792,7 +3817,11 @@ function endShift(){
     const ok=opKey(p);const d=opData[ok]||{};
     return{source:p.source,programName:p.programName,machine:p.machine,
       sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
-      coliDebitate:parseInt(d.coliDebitate)||0,motivDepasire:d.motivDepasire||''};
+      coliDebitate:parseInt(d.coliDebitate)||0,motivDepasire:d.motivDepasire||'',
+      scheduleNo:getSchedNo(p.source),sheetType:getSheetType(p.source),
+      moId:d.moId||'',timpProgram:d.timpProgram||'',itemNo:d.itemNo||'',
+      dimProgram:d.dimProgram||'',formatColi:d.formatColi||'',codMovex:d.codMovex||'',
+      cutMinutes:p.cutMinutes||0};
   }).filter(r=>r.coliDebitate>0);
   shiftState.logoutTime=new Date();
   // Save to DB
@@ -3834,7 +3863,10 @@ async function saveShiftReport(realizations){
       duration:e.duration,startTime:new Date(e.startTime).toISOString(),
       endTime:new Date(e.endTime).toISOString()
     })),
-    realizations:realizations||[]
+    realizations:realizations||[],
+    vr_events:[...stat.vrLog,...(stat.vr.active?[{desc:stat.vr.desc,startTime:stat.vr.startTime,endTime:Date.now(),duration:Date.now()-stat.vr.startTime}]:[])].map(v=>({
+      desc:v.desc,startTime:new Date(v.startTime).toISOString(),endTime:new Date(v.endTime).toISOString(),duration:v.duration
+    }))
   };
   const{error}=await sb.from('shift_reports').insert(payload);
   if(error) console.warn('[NV] saveShiftReport error:',error.message);
@@ -3848,6 +3880,7 @@ function renderRaportare(){
 
   // Detectăm mașinile disponibile
   const machines=[...new Set(allPrograms.map(p=>p.machine))].filter(Boolean);
+  if(!rapViewMachine&&machines.length) rapViewMachine=machines[0];
   if(!shiftMachine&&machines.length) shiftMachine=machines[0];
 
   const curShift=detectCurrentShift();
@@ -3861,34 +3894,35 @@ function renderRaportare(){
   });
 
   // ── SECTIUNEA 1: SHIFT ──
-  const machOpts=machines.length
-    ?machines.map(m=>`<option value="${esc(m)}" ${m===shiftMachine?'selected':''}>${esc(m)}</option>`).join('')
-    :'<option>—</option>';
+  const machBtns=(sel,onClickFn)=>machines.map(m=>
+    `<button class="filt-btn ${sel===m?'active':''}" onclick="${onClickFn}('${esc(m)}')">${esc(m)}</button>`
+  ).join('')||'<span style="font-size:.72rem;color:var(--dim)">Nicio mașină detectată — încarcă nesturi</span>';
   const shiftOpts=SHIFTS.map((s,i)=>`<option value="${i}" ${(shiftState.shiftIdx||0)===i||(s.start===curShift.start&&!shiftState.active)?'selected':''}>${s.label}</option>`).join('');
 
   let shiftSection='';
   if(!shiftState.active){
-    shiftSection=`<div class="shift-inactive">
-      <div>
+    shiftSection=`<div class="shift-inactive" style="flex-wrap:wrap">
+      <div style="flex:1;min-width:220px">
         <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px">Mașină</div>
-        <select class="machine-sel" id="rap-machine-sel" onchange="shiftMachine=this.value">${machOpts}</select>
+        <div class="filter-bar" style="margin:0">${machBtns(shiftMachine,'setShiftMachineBtn')}</div>
       </div>
       <div>
         <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px">Schimb</div>
         <select class="shift-sel" id="rap-shift-sel">${shiftOpts}</select>
       </div>
       <button class="btn-start-shift" onclick="startShift()">▶ Pornește Schimbul</button>
-      <div style="font-size:.72rem;color:var(--dim)">
+      <div style="font-size:.72rem;color:var(--dim);width:100%">
         Schimb curent detectat: <span class="shift-badge ${curShift.cls}">${curShift.label}</span>
       </div>
     </div>`;
   } else {
-    const evStats=Object.values(eventsSum).filter(e=>e.count>0).map(e=>
+    const evStats=Object.values(eventsSum).filter(e=>e.count>0&&e.id!=='VR').map(e=>
       `<div class="shift-stat-item">
         <div class="shift-stat-val">${formatDur(e.total)}</div>
         <div class="shift-stat-lbl">${e.icon} ${e.label}</div>
         <div style="font-size:.6rem;color:var(--dim)">${e.count}×</div>
       </div>`).join('');
+    const vrCount=stat.vrLog.length+(stat.vr.active?1:0);
     shiftSection=`
       <div class="shift-header-row">
         <div>
@@ -3924,32 +3958,50 @@ function renderRaportare(){
           <div class="shift-stat-val">${formatDur(LUNCH_MS)}</div>
           <div class="shift-stat-lbl">🍽 Pauză masă</div>
         </div>
+        ${vrCount?`<div class="shift-stat-item" style="border-color:rgba(255,179,0,.4)">
+          <div class="shift-stat-val" style="color:#ffb300">${vrCount}×</div>
+          <div class="shift-stat-lbl">🐌 Viteză redusă (observ.)</div>
+        </div>`:''}
         ${evStats}
       </div>`;
   }
 
-  // ── SECTIUNEA 2: STATIONĂRI (eveniment activ) ──
-  // (render via renderStatPanel)
+  // ── SECTIUNEA 2: STATIONĂRI + VITEZĂ REDUSĂ (independentă) ──
+  // (render via renderStatPanel + renderVrPanel)
 
-  // ── SECTIUNEA 3: REALIZĂRI pentru mașina selectată ──
-  const machine=shiftState.active?shiftState.machine:shiftMachine;
+  // ── SECTIUNEA 3: REALIZĂRI pentru mașina selectată (butoane, actualizare instant) ──
+  const machine=rapViewMachine||shiftMachine;
   const machProgs=allPrograms.filter(p=>p.machine===machine&&!isCompleted(p));
   const realizedProgs=allPrograms.filter(p=>p.machine===machine&&isCompleted(p));
 
   const si=col=>rapSort.col===col?`<span class="sort-ind">${rapSort.asc?'▲':'▼'}</span>`:'';
-  const th=(col,label)=>`<th onclick="rapSetSort('${col}')" style="cursor:pointer">${label}${si(col)}</th>`;
+  const th=(col,label)=>`<th onclick="rapSetSort('${col}')" style="cursor:pointer;white-space:nowrap">${label}${si(col)}</th>`;
+
+  function rf(ok,field,val,ph,w){
+    return `<input type="text" class="pk-input code" style="width:${w||90}px;font-size:.71rem;padding:3px 6px"
+      value="${esc(val||'')}" placeholder="${ph||''}" data-ok="${ok.replace(/"/g,'&quot;')}" data-field="${field}"
+      oninput="rapFieldInput(this)" onclick="event.stopPropagation()">`;
+  }
 
   function buildRapRow(p){
-    const ok=opKey(p);const sk=sheetKey(p.sheetMaterial);const d=opData[ok]||{coliDebitate:'',motivDepasire:''};
+    const ok=opKey(p);const sk=sheetKey(p.sheetMaterial);
+    ensureOpKey(ok);
+    const d=opData[ok];
     const nec=effectiveNec(p);const deb=parseInt(d.coliDebitate)||0;
     const pct2=nec>0?Math.min(100,Math.round(deb/nec*100)):0;
     const clr=deb===0?'var(--dim)':deb>=nec?'var(--ok)':'var(--accent)';
-    const sid=safeId(ok);const isL=p.type==='l3030';
+    const sid=safeId(ok);
+    const fmtColi=d.formatColi||displaySheet(p.sheetMaterial);
     return `<tr class="data-row">
       <td><div class="tdi" style="text-align:center">${getPriority(p.source)?`<span style="display:inline-block;min-width:22px;height:22px;line-height:22px;border-radius:50%;background:rgba(240,160,0,.15);color:var(--accent);font-weight:700;font-size:.72rem;border:1px solid rgba(240,160,0,.4)">${getPriority(p.source)}</span>`:'—'}</div></td>
-      <td><div class="tdi" style="font-family:var(--mono);font-size:.73rem;font-weight:600">${esc(p.programName||p.source||'')}<div style="margin-top:2px">${sheetTypeBadge(p.source)}</div></div></td>
-      <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem">${displaySheet(p.sheetMaterial)}</div></td>
-      <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem;color:var(--muted)">${esc(pickingData[sk]?.sheetCode||'')}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.73rem;font-weight:600">${esc(p.programName||p.source||'')}<div style="margin-top:2px;display:flex;gap:4px;flex-wrap:wrap">${sheetTypeBadge(p.source)}${p.cutMinutes?`<span style="font-size:.6rem;color:var(--info)">⏱ ${fmtCutMin(p.cutMinutes)}</span>`:''}</div></div></td>
+      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'moId',d.moId,'MO ID',80)}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem;color:var(--accent)">${esc(getSchedNo(p.source))||'—'}</div></td>
+      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'timpProgram',d.timpProgram,'hh:mm',60)}</div></td>
+      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'itemNo',d.itemNo,'Item No',80)}</div></td>
+      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'dimProgram',d.dimProgram,'L×L×G',90)}</div></td>
+      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'formatColi',fmtColi,'L×l×g',90)}</div></td>
+      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'codMovex',d.codMovex,'Cod Movex',90)}</div></td>
       <td onclick="event.stopPropagation()"><div class="tdi" style="min-width:150px">
         <div class="prog-bar-wrap">
           <div class="prog-bar"><div class="prog-bar-fill" id="pbf-${sid}" style="width:${pct2}%;background:${clr}"></div></div>
@@ -3968,37 +4020,43 @@ function renderRaportare(){
     </tr>`;
   }
 
+  const rapHeadRow=`<tr>${th('prio','Prio.')}${th('program','Program')}<th>MO ID</th><th>Schedule No</th><th>Timp Progr.</th><th>Item No</th><th>Dim. Program</th><th>Format Coli Deb.</th><th>Cod Movex</th><th>Cantitate</th><th>Coli Schedule</th></tr>`;
+
   const realSection=realizedProgs.length?`
     <div class="s-head" style="margin-top:16px">✅ Realizate integral (${realizedProgs.length})</div>
-    <div class="rap-wrap"><table class="rap">
-      <thead><tr>${th('prio','Prio.')}${th('program','Program')}${th('sheet','Format')}${th('cod','Cod')}
-        <th>Coli Debitate</th><th>Coli Nec.</th></tr></thead>
+    <div class="rap-wrap" style="overflow-x:auto"><table class="rap">
+      <thead>${rapHeadRow}</thead>
       <tbody>${realizedProgs.map(buildRapRow).join('')}</tbody>
     </table></div>`:'';
 
   const totNec=machProgs.reduce((s,p)=>s+effectiveNec(p),0);
   const totDeb=machProgs.reduce((s,p)=>s+(parseInt(opData[opKey(p)]?.coliDebitate)||0),0);
+  const totTime=machProgs.reduce((s,p)=>s+(p.cutMinutes||0),0);
 
   el.innerHTML=`
     <div class="shift-panel">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
         <span style="font-size:.85rem;font-weight:700">📋 Schimb de Lucru</span>
         <span style="font-size:.7rem;color:var(--dim)">480 min · pauza 20 min</span>
+        <button class="btn-sm btn-cancel-def" style="margin-left:auto" onclick="openShiftReportsModal()">📑 Rapoarte publicate</button>
       </div>
       ${shiftSection}
     </div>
 
     <div class="stat-panel" id="stat-panel"></div>
+    <div id="vr-panel"></div>
 
-    <div class="s-head" style="margin-top:4px">
-      ⚙ Realizări — <span style="color:var(--accent)">${esc(machine||'Selectează mașina')}</span>
-      <span style="font-size:.7rem;font-weight:400;color:var(--muted);margin-left:8px">${machProgs.length} programe · ${totNec} nec · <span style="color:var(--ok)">${totDeb} deb</span></span>
+    <div class="s-head" style="margin-top:4px;display:flex;align-items:center;flex-wrap:wrap;gap:8px">
+      <span>⚙ Realizări — <span style="color:var(--accent)">${esc(machine||'—')}</span></span>
+      <span style="font-size:.7rem;font-weight:400;color:var(--muted)">${machProgs.length} progr. · ${totNec} nec · <span style="color:var(--ok)">${totDeb} deb</span> · <span style="color:var(--info)">⏱ ${fmtCutMin(totTime)}</span></span>
     </div>
-    ${machProgs.length?`<div class="rap-wrap"><table class="rap">
-      <thead><tr>${th('prio','Prio.')}${th('program','Program')}${th('sheet','Format')}${th('cod','Cod')}
-        <th>Coli Debitate</th><th>Coli Nec.</th></tr></thead>
+    <div class="filter-bar" style="margin-bottom:8px">
+      <span class="lbl">Mașină:</span>${machBtns(rapViewMachine,'setRapViewMachine')}
+    </div>
+    ${machProgs.length?`<div class="rap-wrap" style="overflow-x:auto"><table class="rap">
+      <thead>${rapHeadRow}</thead>
       <tbody>${machProgs.map(buildRapRow).join('')}</tbody>
-      <tfoot><tr><td colspan="4" style="text-align:right;color:var(--muted);font-size:.71rem">TOTAL:</td>
+      <tfoot><tr><td colspan="8" style="text-align:right;color:var(--muted);font-size:.71rem">TOTAL:</td>
         <td style="text-align:center;color:var(--ok)">${totDeb}</td>
         <td style="text-align:center;color:var(--accent)">${totNec}</td></tr></tfoot>
     </table></div>`
@@ -4006,6 +4064,19 @@ function renderRaportare(){
     ${realSection}`;
 
   renderStatPanel();
+  renderVrPanel();
+}
+
+function setShiftMachineBtn(m){shiftMachine=m;rapViewMachine=m;renderRaportare();}
+function setRapViewMachine(m){rapViewMachine=m;renderRaportare();}
+
+let _rapFieldTimer={};
+function rapFieldInput(el){
+  const ok=el.dataset.ok,field=el.dataset.field;
+  ensureOpKey(ok);
+  opData[ok][field]=el.value;
+  clearTimeout(_rapFieldTimer[ok+field]);
+  _rapFieldTimer[ok+field]=setTimeout(()=>saveOpToSupabase(ok),600);
 }
 
 function rapSearchChange(v){rapSearch=v;renderRaportare();}
@@ -4098,6 +4169,147 @@ function sheetDimsCancel(){
   showNextSheetDimsPrompt();
 }
 </script>
+
+
+
+<script>
+let _nestSearchTimer=null;
+function nestSearchChange(v){
+  nestSearch=v;
+  clearTimeout(_nestSearchTimer);
+  _nestSearchTimer=setTimeout(()=>{
+    const inp=document.getElementById('nest-search-inp');
+    const cursorPos=inp?.selectionStart;
+    const wasFocused=document.activeElement===inp;
+    renderNesturi();
+    if(wasFocused){
+      const newInp=document.getElementById('nest-search-inp');
+      if(newInp){newInp.focus();try{newInp.setSelectionRange(cursorPos,cursorPos);}catch(_){}}
+    }
+  },300);
+}
+</script>
+
+
+<script>
+/* ══ VITEZĂ REDUSĂ — observație independentă, NU consumă timp de funcționare ══ */
+function toggleVR(){
+  if(stat.vr.active){
+    // Oprire: mută în vrLog cu durată
+    const endTime=Date.now();
+    stat.vrLog.push({
+      desc:stat.vr.desc,startTime:stat.vr.startTime,endTime,
+      duration:endTime-stat.vr.startTime
+    });
+    stat.vr={active:false,desc:'',startTime:null};
+    renderVrPanel();
+    if(activeTab==='raportare') renderRaportare();
+  } else {
+    // Pornire: necesită descriere obligatorie
+    const p=document.getElementById('vr-desc-panel');
+    if(p){p.style.display='block';document.getElementById('vr-desc-input')?.focus();}
+  }
+}
+function vrConfirmStart(){
+  const desc=document.getElementById('vr-desc-input')?.value.trim();
+  if(!desc){
+    document.getElementById('vr-desc-input')?.classList.add('err');
+    document.getElementById('vr-desc-hint')?.classList.add('show');
+    return;
+  }
+  stat.vr={active:true,desc,startTime:Date.now()};
+  document.getElementById('vr-desc-panel').style.display='none';
+  document.getElementById('vr-desc-input').value='';
+  document.getElementById('vr-desc-input')?.classList.remove('err');
+  document.getElementById('vr-desc-hint')?.classList.remove('show');
+  renderVrPanel();
+  if(activeTab==='raportare') renderRaportare();
+}
+function vrCancelStart(){
+  document.getElementById('vr-desc-panel').style.display='none';
+  document.getElementById('vr-desc-input').value='';
+  document.getElementById('vr-desc-input')?.classList.remove('err');
+  document.getElementById('vr-desc-hint')?.classList.remove('show');
+}
+function renderVrPanel(){
+  const el=document.getElementById('vr-panel');
+  if(!el) return;
+  const isOn=stat.vr.active;
+  const elapsedVr=isOn?Date.now()-stat.vr.startTime:0;
+  el.innerHTML=`
+    <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;margin-bottom:10px;border-radius:9px;
+      background:${isOn?'rgba(255,179,0,.1)':'var(--surf)'};border:1.5px solid ${isOn?'rgba(255,179,0,.5)':'var(--border)'}">
+      <button onclick="toggleVR()" style="display:flex;align-items:center;gap:7px;padding:7px 14px;border-radius:7px;cursor:pointer;
+        background:${isOn?'#ffb300':'var(--surf2)'};color:${isOn?'#000':'var(--muted)'};border:1px solid ${isOn?'#ffb300':'var(--border2)'};font-weight:700;font-size:.8rem">
+        🐌 ${isOn?'OPREȘTE':'Funcționez cu viteză redusă'}
+      </button>
+      ${isOn?`<span style="font-size:.78rem;color:#ffb300;font-weight:700">${formatDur(elapsedVr)}</span>
+        <span style="font-size:.75rem;color:var(--muted);font-style:italic">— ${esc(stat.vr.desc)}</span>
+        <span style="margin-left:auto;font-size:.65rem;color:var(--dim)">⚠ nu se scade din timpul de funcționare</span>`
+        :`<span style="font-size:.7rem;color:var(--dim)">${stat.vrLog.length?stat.vrLog.length+' înregistrări în acest schimb':'Nu afectează cronometrul — doar observație'}</span>`}
+    </div>
+    <div class="def-desc-panel" id="vr-desc-panel" style="display:none;margin-bottom:10px">
+      <label>🐌 Motiv viteză redusă (obligatoriu):</label>
+      <textarea class="def-desc-input" id="vr-desc-input" placeholder="ex: Material dificil, Test parametri, Piesă complexă…"></textarea>
+      <div id="vr-desc-hint" style="display:none;color:var(--warn);font-size:.72rem;margin-top:4px">⚠ Introdu un motiv înainte de a continua!</div>
+      <div class="def-desc-btns">
+        <button class="btn-sm btn-start-def" onclick="vrConfirmStart()">▶ Start</button>
+        <button class="btn-sm btn-cancel-def" onclick="vrCancelStart()">Anulează</button>
+      </div>
+    </div>`;
+}
+
+/* ══ RAPOARTE PUBLICATE DE OPERATORI ══ */
+async function openShiftReportsModal(){
+  let modal=document.getElementById('shift-reports-modal');
+  if(!modal){
+    modal=document.createElement('div');
+    modal.id='shift-reports-modal';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:3200;display:flex;align-items:center;justify-content:center;padding:16px';
+    modal.onclick=e=>{if(e.target===modal) modal.style.display='none';};
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML=`<div style="background:var(--surf);border:1px solid var(--border);border-radius:var(--r);width:min(900px,96vw);max-height:88vh;overflow-y:auto;padding:18px;box-shadow:var(--sh)">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <h3 style="margin:0;font-size:.95rem;flex:1">📑 Rapoarte Publicate de Operatori</h3>
+      <button class="logout-btn" onclick="document.getElementById('shift-reports-modal').style.display='none'">✕</button>
+    </div>
+    <div id="shift-reports-list"><div style="text-align:center;padding:20px;color:var(--dim)">Se încarcă…</div></div>
+  </div>`;
+  modal.style.display='flex';
+
+  if(!sb){document.getElementById('shift-reports-list').innerHTML='<div class="empty-state"><div class="et">Fără conexiune Supabase.</div></div>';return;}
+  const{data,error}=await sb.from('shift_reports').select('*').order('login_time',{ascending:false}).limit(50);
+  const listEl=document.getElementById('shift-reports-list');
+  if(error){listEl.innerHTML='<div class="empty-state"><div class="et" style="color:var(--warn)">Eroare: '+esc(error.message)+'</div></div>';return;}
+  if(!data||!data.length){listEl.innerHTML='<div class="empty-state"><div class="et">Niciun raport publicat încă.</div></div>';return;}
+
+  listEl.innerHTML=data.map(r=>{
+    const login=new Date(r.login_time);
+    const logout=r.logout_time?new Date(r.logout_time):null;
+    const evCount=(r.events||[]).length;
+    const realCount=(r.realizations||[]).length;
+    const totalDeb=(r.realizations||[]).reduce((s,x)=>s+(parseInt(x.coliDebitate)||0),0);
+    return `<div style="background:var(--surf2);border:1px solid var(--border);border-radius:9px;padding:12px 14px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <strong style="font-size:.85rem">${esc(r.machine)}</strong>
+        <span class="shift-badge ${r.shift_label?.startsWith('06')?'s-06':r.shift_label?.startsWith('14')?'s-14':'s-22'}">${esc(r.shift_label||'')}</span>
+        <span style="font-size:.72rem;color:var(--muted)">👤 ${esc(r.operator_name||'—')}</span>
+        <span style="margin-left:auto;font-size:.7rem;color:var(--dim);font-family:var(--mono)">
+          ${login.toLocaleDateString('ro-RO')} ${login.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'})}
+          ${logout?' → '+logout.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'}):''}
+        </span>
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:.74rem;color:var(--muted)">
+        <span>⏱ Total: <strong style="color:var(--text)">${formatDur(r.total_ms||0)}</strong></span>
+        <span>⚙ Funcționare: <strong style="color:var(--ok)">${formatDur(r.running_ms||0)}</strong></span>
+        <span>⏸ Stationări: <strong style="color:var(--warn)">${evCount}</strong></span>
+        <span>📦 Programe raportate: <strong style="color:var(--accent)">${realCount}</strong></span>
+        <span>📊 Coli debitate: <strong style="color:var(--ok)">${totalDeb}</strong></span>
+      </div>
+    </div>`;
+  }).join('');
+}
+</script>
 </body>
 </html>
-
