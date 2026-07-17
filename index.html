@@ -717,7 +717,7 @@ let labelConfig={
 let printQueue=[];
 
 // ── Variabile Schimb ──
-let shiftState={active:false,machine:'',shiftLabel:'',loginTime:null,events:[],timerRef:null};
+let shiftState={active:false,machine:'',shiftLabel:'',loginTime:null,events:[],timerRef:null,completedRealizations:[]};
 let shiftMachine=''; // mașina selectată pentru schimb + Realizări (unificat)
 
 // ── Variabile Storage Supabase ──
@@ -751,12 +751,13 @@ const esc=s=>String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g
 const safeId=s=>s.replace(/[^a-z0-9]/gi,'_');
 function formatDur(ms){const s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=s%60;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sc).padStart(2,'0')}`;}
 function formatTime(ts){return new Date(ts).toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
-function sheetKey(s){
+function sheetKey(s,sheetType){
   if(!s||s==='?') return '?';
   const m=s.replace(/mm$/i,'').match(/([\d.]+)\s*x\s*([\d.]+)\s*x\s*([\d.]+)/i);
-  if(!m) return s.toLowerCase().replace(/\s+/g,'');
-  const w=parseFloat(m[1]),h=parseFloat(m[2]),t=parseFloat(m[3]);
-  return `${Math.max(w,h)}_${Math.min(w,h)}_${t}`;
+  const base=!m?s.toLowerCase().replace(/\s+/g,''):
+    `${Math.max(parseFloat(m[1]),parseFloat(m[2]))}_${Math.min(parseFloat(m[1]),parseFloat(m[2]))}_${parseFloat(m[3])}`;
+  // Tipul de tablă face parte din cheie — Oțel și Aluminiu la aceeași grosime NU se amestecă
+  return sheetType?`${base}::${sheetType}`:base;
 }
 function displaySheet(s){
   if(!s||s==='?') return '—';
@@ -766,8 +767,8 @@ function displaySheet(s){
   const tt=t===Math.round(t)?t.toFixed(0):parseFloat(t.toFixed(2)).toString();
   return `${Math.max(w,h)} × ${Math.min(w,h)} × ${tt} mm`;
 }
-function uniqueSheetKeys(){return[...new Set(allPrograms.map(p=>sheetKey(p.sheetMaterial)))].filter(k=>k&&k!=='?');}
-function sheetNeed(key){return allPrograms.filter(p=>sheetKey(p.sheetMaterial)===key).reduce((s,p)=>s+effectiveNec(p),0);}
+function uniqueSheetKeys(){return[...new Set(allPrograms.map(p=>sheetKey(p.sheetMaterial,getSheetType(p.source))))].filter(k=>k&&k!=='?');}
+function sheetNeed(key){return allPrograms.filter(p=>sheetKey(p.sheetMaterial,getSheetType(p.source))===key).reduce((s,p)=>s+effectiveNec(p),0);}
 function opKey(p){return `${p.source}|||${p.programName}`;}
 function effectiveNec(p){const k=opKey(p);const ov=parseInt(opData[k]?.numOfSheetOverride);return(ov>0?ov:null)||(p.numOfSheet||0);}
 function ensurePick(key){if(!pickingData[key]) pickingData[key]={sheetCode:'',reservedQty:'',reservedAt:null,surplusMotiv:''};}
@@ -962,6 +963,24 @@ function checkSourceComplete(source){
 function autoDeleteCompletedSource(source){
   if(!checkSourceComplete(source)) return;
   console.log('[NV] Sursă raportată integral → ștergere automată:',source);
+
+  // Salvează datele complete în jurnalul schimbului ACTIV (dacă e cazul) — altfel s-ar pierde la Finalizare Schimb
+  if(shiftState.active){
+    const progsOfSource=allPrograms.filter(p=>p.source===source&&p.machine===shiftState.machine);
+    progsOfSource.forEach(p=>{
+      const ok=opKey(p);const d=opData[ok]||{};
+      shiftState.completedRealizations.push({
+        source:p.source,programName:p.programName,machine:p.machine,
+        sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
+        coliDebitate:parseInt(d.coliDebitate)||0,motivDepasire:d.motivDepasire||'',
+        scheduleNo:getSchedNo(p.source),sheetType:getSheetType(p.source),
+        moId:d.moId||'',timpProgram:d.timpProgram||'',itemNo:d.itemNo||'',
+        dimProgram:d.dimProgram||'',formatColi:d.formatColi||'',codMovex:d.codMovex||'',
+        cutMinutes:p.cutMinutes||0
+      });
+    });
+  }
+
   // Șterge din memorie
   for(let i=allPrograms.length-1;i>=0;i--){
     if(allPrograms[i].source===source) allPrograms.splice(i,1);
@@ -974,7 +993,8 @@ function autoDeleteCompletedSource(source){
   refreshStats();updateTabCounts();
   renderNesturi();
   if(typeof renderPicking==='function') renderPicking();
-  showToast('✓ Nest "'+source+'" raportat integral — eliminat din listă');
+  if(typeof renderRaportare==='function'&&activeTab==='raportare') renderRaportare();
+  showToast('✓ Nest "'+source+'" raportat integral — eliminat din Nesturi + Picking (rămâne în Rapoarte)');
 }
 
 /* ══ PARSER LST (Trumpf TruTops) ══ */
@@ -1341,7 +1361,7 @@ function onLoaded(programs){
     if(newSources.has(allPrograms[i].source)) allPrograms.splice(i,1);
   }
   allPrograms.push(...programs);
-  programs.forEach(p=>{p._importedAt=Date.now();ensurePick(sheetKey(p.sheetMaterial));ensureOp(p);ensureSchedule(p.source);});
+  programs.forEach(p=>{p._importedAt=Date.now();ensurePick(sheetKey(p.sheetMaterial,getSheetType(p.source)));ensureOp(p);ensureSchedule(p.source);});
   // Adaugă surse noi în coada de prompt-uri Schedule No.
   const newSrc=[...new Set(programs.map(p=>p.source))].filter(s=>!schedQueue.includes(s));
   schedQueue.push(...newSrc);
@@ -1900,13 +1920,15 @@ function renderPicking(){
   const keys=uniqueSheetKeys();
   const pkRows=keys.map(key=>{
     ensurePick(key);const d=pickingData[key];const need=sheetNeed(key);
-    const progs=allPrograms.filter(p=>sheetKey(p.sheetMaterial)===key);
+    const progs=allPrograms.filter(p=>sheetKey(p.sheetMaterial,getSheetType(p.source))===key);
     const machines=[...new Set(progs.map(p=>p.machine))].join(', ');
     const schedules=[...new Set(progs.map(p=>schedNr(p.source)).filter(Boolean))].join(', ');
     const progHint=progs.map(p=>`${p.programName}(×${effectiveNec(p)})`).join(', ');
     const firstSrc=progs[0]?.source||'';
+    const debTotal=progs.reduce((s,p)=>s+(parseInt(opData[opKey(p)]?.coliDebitate)||0),0);
+    const asigurat=parseInt(d.reservedQty)||0;
     return `<tr data-key="${key}" data-nec="${need}">
-      <td><div class="pk-format">${displaySheet(allPrograms.find(p=>sheetKey(p.sheetMaterial)===key)?.sheetMaterial||'')}</div><div style="font-size:.67rem;color:var(--dim);margin-top:2px">${progHint}</div></td>
+      <td><div class="pk-format">${displaySheet(allPrograms.find(p=>sheetKey(p.sheetMaterial,getSheetType(p.source))===key)?.sheetMaterial||'')}</div><div style="font-size:.67rem;color:var(--dim);margin-top:2px">${progHint}</div></td>
       <td>${sheetTypeBadge(firstSrc)}</td>
       <td><div style="font-size:.72rem;color:var(--muted)">${machines}</div></td>
       <td><div style="font-family:var(--mono);font-size:.76rem;color:var(--accent)">${schedules||'<span style="color:var(--dim)">—</span>'}</div></td>
@@ -1919,11 +1941,12 @@ function renderPicking(){
       <td><input type="number" class="pk-input qty" value="${esc(d.reservedQty)}" min="0" data-key="${key}" oninput="pkRes(this)"></td>
       <td id="pkd-${safeId(key)}" style="text-align:center;font-family:var(--mono);font-size:.8rem">${diffHtml(need,d.reservedQty)}</td>
       <td id="pks-${safeId(key)}">${statusBadge(need,d.reservedQty)}${d.surplusMotiv?`<div id="pksm-${safeId(key)}" style="font-size:.67rem;color:var(--info);font-style:italic;margin-top:2px">📎 ${esc(d.surplusMotiv)}</div>`:`<div id="pksm-${safeId(key)}"></div>`}</td>
+      <td style="font-size:.68rem;color:var(--muted);max-width:200px">${debTotal>0?`<span style="color:var(--info)">📊 Necesar <strong>${need}</strong> coli, asigurat <strong>${asigurat}</strong>, debitat <strong style="color:${debTotal>=need?'var(--ok)':'var(--accent)'}">${debTotal}</strong></span>`:'<span style="color:var(--dim)">—</span>'}</td>
       <td id="pkdt-${safeId(key)}" style="font-size:.72rem;color:var(--muted);white-space:nowrap;font-family:var(--mono)">${fmtReservedAt(d.reservedAt)}</td>
     </tr>`;}).join('');
   const fp=pickFilter==='all'?allPrograms:allPrograms.filter(p=>p.type===pickFilter);
   const nestGroups={};
-  for(const p of fp){const sk=sheetKey(p.sheetMaterial);const gk=`${p.source}|||${sk}`;if(!nestGroups[gk]) nestGroups[gk]={type:p.type,machine:p.machine,source:p.source,sk,sheetMaterial:p.sheetMaterial,totalColi:0};nestGroups[gk].totalColi+=effectiveNec(p);}
+  for(const p of fp){const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));const gk=`${p.source}|||${sk}`;if(!nestGroups[gk]) nestGroups[gk]={type:p.type,machine:p.machine,source:p.source,sk,sheetMaterial:p.sheetMaterial,totalColi:0};nestGroups[gk].totalColi+=effectiveNec(p);}
   const isNestRez=gk=>{const g=nestGroups[gk];if(!g) return false;const d=pickingData[g.sk];const r=parseInt(d?.reservedQty)||0;return r>0&&r>=sheetNeed(g.sk);};
   function nestRow(g,gk){if(g.sk) ensurePick(g.sk);const d=pickingData[g.sk]||{sheetCode:'',reservedQty:'',reservedAt:null,surplusMotiv:''};const sch=schedNr(g.source);
     const prio=getPriority(g.source);
@@ -1947,8 +1970,8 @@ function renderPicking(){
   el.innerHTML=`
     <div class="s-head">🗃 Picking Tablă</div>
     <div class="sc pk-wrap"><table class="pk">
-      <thead><tr><th>Format</th><th>Tip Tablă</th><th>Mașină</th><th>SCH #</th><th>Cod Tablă</th><th style="text-align:center">Necesar</th><th>Rezervat</th><th style="text-align:center">Δ</th><th>Status</th><th>Data rez.</th></tr></thead>
-      <tbody>${pkRows||'<tr><td colspan="10" style="padding:12px;text-align:center;color:var(--dim)">—</td></tr>'}</tbody>
+      <thead><tr><th>Format</th><th>Tip Tablă</th><th>Mașină</th><th>SCH #</th><th>Cod Tablă</th><th style="text-align:center">Necesar</th><th>Rezervat</th><th style="text-align:center">Δ</th><th>Status</th><th>Debitat (raportare)</th><th>Data rez.</th></tr></thead>
+      <tbody>${pkRows||'<tr><td colspan="11" style="padding:12px;text-align:center;color:var(--dim)">—</td></tr>'}</tbody>
     </table></div>
     <div class="s-head" style="margin-top:18px">📦 Nesturi în așteptare (${activeGroups.length})</div>
     <div class="filter-bar" style="margin-bottom:9px"><span class="lbl">Mașină:</span>${['all','l3030','bodor'].map(f=>`<button class="filt-btn pk-filt ${f!=='all'?f:''} ${pickFilter===f?'active':''}" data-f="${f}" onclick="setPickFilter('${f}')">${f==='all'?'Toate':f==='l3030'?'⚡ L3030':'🔵 Bodor'}</button>`).join('')}</div>
@@ -2003,7 +2026,7 @@ function renderRaportare(){
   rapSearch=curSearch;rapMachine=curMachine;rapFormat=curFormat;
   let filtered=allPrograms;
   if(rapMachine!=='Toate') filtered=filtered.filter(p=>p.machine===rapMachine);
-  if(rapFormat!=='Toate') filtered=filtered.filter(p=>sheetKey(p.sheetMaterial)===rapFormat);
+  if(rapFormat!=='Toate') filtered=filtered.filter(p=>sheetKey(p.sheetMaterial,getSheetType(p.source))===rapFormat);
   if(rapSearch.trim()) filtered=filtered.filter(p=>p.source.toLowerCase().includes(rapSearch.toLowerCase())||p.programName.toLowerCase().includes(rapSearch.toLowerCase()));
   const{col,asc}=rapSort;
   filtered=[...filtered].sort((a,b)=>{
@@ -2011,8 +2034,8 @@ function renderRaportare(){
     if(col==='deb'){const av=parseInt(opData[opKey(a)]?.coliDebitate)||0,bv=parseInt(opData[opKey(b)]?.coliDebitate)||0;return asc?av-bv:bv-av;}
     if(col==='sch'){const av=schedNr(a.source),bv=schedNr(b.source);return asc?(av<bv?-1:av>bv?1:0):(av<bv?1:av>bv?-1:0);}
     if(col==='prio'){const av=getPriority(a.source),bv=getPriority(b.source);if(!av&&!bv) return 0;if(!av) return asc?1:-1;if(!bv) return asc?-1:1;return asc?av-bv:bv-av;}
-    const av=col==='source'?a.source:col==='program'?a.programName:col==='sheet'?sheetKey(a.sheetMaterial):col==='cod'?(pickingData[sheetKey(a.sheetMaterial)]?.sheetCode||''):a.machine;
-    const bv=col==='source'?b.source:col==='program'?b.programName:col==='sheet'?sheetKey(b.sheetMaterial):col==='cod'?(pickingData[sheetKey(b.sheetMaterial)]?.sheetCode||''):b.machine;
+    const av=col==='source'?a.source:col==='program'?a.programName:col==='sheet'?sheetKey(a.sheetMaterial,getSheetType(a.source)):col==='cod'?(pickingData[sheetKey(a.sheetMaterial,getSheetType(a.source))]?.sheetCode||''):a.machine;
+    const bv=col==='source'?b.source:col==='program'?b.programName:col==='sheet'?sheetKey(b.sheetMaterial,getSheetType(b.source)):col==='cod'?(pickingData[sheetKey(b.sheetMaterial,getSheetType(b.source))]?.sheetCode||''):b.machine;
     return asc?(av<bv?-1:av>bv?1:0):(av<bv?1:av>bv?-1:0);
   });
   const active=filtered.filter(p=>!isCompleted(p));
@@ -2025,10 +2048,10 @@ function renderRaportare(){
   const si=c=>rapSort.col===c?`<span class="sort-ind">${rapSort.asc?'▲':'▼'}</span>`:'';
   const th=(c,label)=>`<th onclick="rapSetSort('${c}')">${label}${si(c)}</th>`;
   const machOpts=machines.map(m=>`<option value="${esc(m)}" ${m===rapMachine?'selected':''}>${esc(m)}</option>`).join('');
-  const fmtOpts=formats.map(k=>`<option value="${esc(k)}" ${k===rapFormat?'selected':''}>${k==='Toate'?'Toate':displaySheet(allPrograms.find(p=>sheetKey(p.sheetMaterial)===k)?.sheetMaterial||'')}</option>`).join('');
+  const fmtOpts=formats.map(k=>`<option value="${esc(k)}" ${k===rapFormat?'selected':''}>${k==='Toate'?'Toate':displaySheet(allPrograms.find(p=>sheetKey(p.sheetMaterial,getSheetType(p.source))===k)?.sheetMaterial||'')}</option>`).join('');
 
   function buildActiveRows(list){return list.map(p=>{
-    const ok=opKey(p);const sk=sheetKey(p.sheetMaterial);const d=opData[ok]||{coliDebitate:'',motivDepasire:''};
+    const ok=opKey(p);const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));const d=opData[ok]||{coliDebitate:'',motivDepasire:''};
     const nec=effectiveNec(p);const deb=parseInt(d.coliDebitate)||0;
     const pct=nec>0?Math.min(100,Math.round(deb/nec*100)):0;
     const clr=deb===0?'var(--dim)':deb>=nec?'var(--ok)':'var(--accent)';
@@ -2069,7 +2092,7 @@ function renderRaportare(){
       <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem;color:var(--muted)">${esc(p.source)}</div></td>
       <td><div class="tdi" style="font-family:var(--mono);font-size:.77rem;font-weight:600">${esc(p.programName)}</div></td>
       <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem">${displaySheet(p.sheetMaterial)}</div></td>
-      <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem;color:var(--muted)">${esc(pickingData[sheetKey(p.sheetMaterial)]?.sheetCode||'')}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.74rem;color:var(--muted)">${esc(pickingData[sheetKey(p.sheetMaterial,getSheetType(p.source))]?.sheetCode||'')}</div></td>
       <td><div class="tdi"><span style="font-family:var(--mono);font-size:.76rem;color:var(--accent)">${esc(schedNr(p.source))||'—'}</span></div></td>
       <td><div class="tdi" style="display:flex;align-items:center;gap:7px"><strong style="font-family:var(--mono);color:${over?'var(--warn)':'var(--ok)'}">${deb}</strong>${badge}</div></td>
       ${hasRealMotiv?`<td><div class="tdi motiv-cell">${over?esc(d.motivDepasire||'—'):'—'}</div></td>`:''}
@@ -2177,7 +2200,7 @@ function toggleDetail(ok){const sid=safeId(ok);const row=document.getElementById
 function buildDetail(p){
   // pparts TREBUIE să fie primul — folosit de tot restul funcției
   const pparts=Array.isArray(p.parts)?p.parts:[];
-  const ok=opKey(p);const sk=sheetKey(p.sheetMaterial);const d=opData[ok]||{};
+  const ok=opKey(p);const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));const d=opData[ok]||{};
   const cod=pickingData[sk]?.sheetCode||'—';
   const totalBuc=pparts.reduce((s,x)=>s+(parseInt(x.pcs)||0),0);
   const isL=p.type==='l3030';
@@ -3816,7 +3839,7 @@ function startShift(){
   const shift=SHIFTS[sIdx]||detectCurrentShift();
   shiftState={
     active:true,machine:shiftMachine,shiftLabel:shift.label,
-    loginTime:new Date(),events:[],timerRef:null,shiftIdx:sIdx
+    loginTime:new Date(),events:[],timerRef:null,shiftIdx:sIdx,completedRealizations:[]
   };
   // Reset stationari for new shift
   stat.log=[];stat.active=null;stat.runAccum=0;stat.runStart=Date.now();
@@ -3850,9 +3873,11 @@ function endShift(){
       dimProgram:d.dimProgram||'',formatColi:d.formatColi||'',codMovex:d.codMovex||'',
       cutMinutes:p.cutMinutes||0};
   }).filter(r=>r.coliDebitate>0);
+  // Combină cu realizările nesturilor deja șterse automat (raportate integral în timpul schimbului)
+  const allRaps=[...shiftState.completedRealizations,...raps];
   shiftState.logoutTime=new Date();
   // Save to DB
-  saveShiftReport(raps);
+  saveShiftReport(allRaps);
   shiftState.active=false;
   renderRaportare();
   showToast('✓ Schimb finalizat și salvat');
@@ -4010,7 +4035,7 @@ function renderRaportare(){
   }
 
   function buildRapRow(p){
-    const ok=opKey(p);const sk=sheetKey(p.sheetMaterial);
+    const ok=opKey(p);const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
     ensureOpKey(ok);
     const d=opData[ok];
     const nec=effectiveNec(p);const deb=parseInt(d.coliDebitate)||0;
@@ -4171,7 +4196,7 @@ function sheetDimsConfirm(){
     allPrograms.forEach(p=>{
       if(p.source===item.source&&(!p.sheetMaterial||p.sheetMaterial==='?')){
         p.sheetMaterial=sheetStr;
-        ensurePick(sheetKey(sheetStr));
+        ensurePick(sheetKey(sheetStr,getSheetType(item.source)));
       }
     });
     renderNesturi();
@@ -4307,6 +4332,7 @@ async function openShiftReportsModal(){
   if(error){listEl.innerHTML='<div class="empty-state"><div class="et" style="color:var(--warn)">Eroare: '+esc(error.message)+'</div></div>';return;}
   if(!data||!data.length){listEl.innerHTML='<div class="empty-state"><div class="et">Niciun raport publicat încă.</div></div>';return;}
 
+  const isDev=currentProfile?.role==='developer';
   listEl.innerHTML=data.map(r=>{
     const login=new Date(r.login_time);
     const logout=r.logout_time?new Date(r.logout_time):null;
@@ -4322,6 +4348,8 @@ async function openShiftReportsModal(){
           ${login.toLocaleDateString('ro-RO')} ${login.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'})}
           ${logout?' → '+logout.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'}):''}
         </span>
+        ${isDev?`<button onclick="deleteShiftReport('${r.id}')" title="Șterge raportul (Developer)"
+          style="background:rgba(239,83,80,.1);border:1px solid rgba(239,83,80,.35);border-radius:5px;padding:3px 9px;cursor:pointer;color:var(--warn);font-size:.7rem">🗑 Șterge</button>`:''}
       </div>
       <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:.74rem;color:var(--muted)">
         <span>⏱ Total: <strong style="color:var(--text)">${formatDur(r.total_ms||0)}</strong></span>
@@ -4332,6 +4360,15 @@ async function openShiftReportsModal(){
       </div>
     </div>`;
   }).join('');
+}
+
+async function deleteShiftReport(id){
+  if(currentProfile?.role!=='developer'){alert('Doar Developer poate șterge rapoarte publicate.');return;}
+  if(!confirm('Ștergi definitiv acest raport de schimb? Acțiunea nu poate fi anulată.')) return;
+  const{error}=await sb.from('shift_reports').delete().eq('id',id);
+  if(error){showToast('⚠ Eroare ștergere: '+error.message,'err');return;}
+  showToast('✓ Raport șters');
+  openShiftReportsModal();
 }
 </script>
 <!-- ══ QR SCANNER MODAL — Cod Tablă ══ -->
