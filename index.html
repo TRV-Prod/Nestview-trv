@@ -20,7 +20,7 @@
 body{font-family:-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:60px;}
 /* ── Layout flex row (views + sidebar) ── */
 #app-row{display:flex;align-items:flex-start;align-items:flex-start;}
-#app-views{flex:1;min-width:0;overflow:auto;}
+#app-views{flex:1;min-width:0;overflow:auto;width:100%;}
 /* ── Sidebar dropzone ── */
 #dropzone-side-REMOVED{position:sticky;top:48px; /* removed-duplicate
   width:var(--sidebar-w);flex-shrink:0;
@@ -201,6 +201,34 @@ body{font-family:-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:
 .btn-start-shift{padding:8px 18px;background:var(--ok);border:none;border-radius:7px;color:#000;font-weight:700;font-size:.82rem;cursor:pointer;transition:opacity .15s}
 .btn-start-shift:hover{opacity:.85}
 .btn-end-shift{padding:8px 18px;background:rgba(239,83,80,.12);border:1px solid rgba(239,83,80,.4);border-radius:7px;color:var(--warn);font-weight:700;font-size:.82rem;cursor:pointer}
+
+/* ══ RESPONSIVE — Laptop / Tabletă / Telefon ══ */
+@media (max-width:1024px){
+  .main{padding:14px 12px 20px;}
+  .nest-cols{grid-template-columns:1fr!important;}
+  table.rap{font-size:.72rem;}
+  table.pk,table.ns{font-size:.74rem;}
+}
+@media (max-width:768px){
+  #dropzone-side{display:none!important;}
+  .main{padding:10px 8px 16px;}
+  .card-head{flex-wrap:wrap;}
+  .shift-header-row{flex-direction:column;align-items:stretch;}
+  .shift-stats{justify-content:center;}
+  table.rap th,table.rap td{padding:5px 6px;font-size:.68rem;}
+  .filter-bar{flex-wrap:wrap;}
+  .lcfg-body{grid-template-columns:1fr!important;}
+}
+@media (max-width:480px){
+  .app-header{flex-wrap:wrap;padding:8px 10px;}
+  .user-info-bar{gap:6px;}
+  .tabs-bar{overflow-x:auto;white-space:nowrap;}
+  .tab-btn{padding:7px 10px;font-size:.75rem;}
+  table.pk th,table.pk td,table.ns th,table.ns td{padding:4px 5px;font-size:.65rem;}
+  .prio-inp{width:40px!important;height:26px!important;font-size:.8rem!important;}
+  .card-rpt{font-size:.72rem;flex-wrap:wrap;}
+  .stat-timer-big,.shift-timer-big{font-size:1.4rem!important;}
+}
 .sched-inp{background:var(--surf3);border:1px solid var(--border2);border-radius:5px;
   padding:3px 8px;color:var(--accent);font-size:.72rem;font-family:var(--mono);outline:none;
   width:96px;transition:border-color .15s;letter-spacing:.04em;}
@@ -223,7 +251,7 @@ body.drag-active #dropzone-side{background:rgba(0,212,160,.1);border-left:2px so
 .tc{background:var(--surf3);color:var(--muted);border-radius:10px;font-size:.62rem;padding:1px 6px;margin-left:4px;font-weight:700;}
 .tab-btn.active .tc{background:rgba(240,160,0,.15);color:var(--accent);}
 .view{display:none;}.view.active{display:block;}
-.main{max-width:1140px;margin:0 auto;padding:18px 16px 0;}
+.main{width:100%;max-width:none;margin:0;padding:18px 20px 24px;box-sizing:border-box;}
 .s-head{font-size:.66rem;text-transform:uppercase;letter-spacing:.08em;color:var(--accent);font-weight:700;margin:16px 0 9px;display:flex;align-items:center;gap:10px;}
 .s-head::after{content:'';flex:1;height:1px;background:rgba(240,160,0,.2);}
 #dropzone{border:2px dashed var(--border2);border-radius:var(--r);padding:28px 20px;text-align:center;cursor:pointer;background:var(--surf);transition:border-color .2s;margin-bottom:14px;}
@@ -969,13 +997,19 @@ function autoDeleteCompletedSource(source){
     const progsOfSource=allPrograms.filter(p=>p.source===source&&p.machine===shiftState.machine);
     progsOfSource.forEach(p=>{
       const ok=opKey(p);const d=opData[ok]||{};
+      const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
+      const deb=parseInt(d.coliDebitate)||0;
       shiftState.completedRealizations.push({
         source:p.source,programName:p.programName,machine:p.machine,
         sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
-        coliDebitate:parseInt(d.coliDebitate)||0,motivDepasire:d.motivDepasire||'',
+        coliDebitate:deb,motivDepasire:d.motivDepasire||'',
         scheduleNo:getSchedNo(p.source),sheetType:getSheetType(p.source),
-        moId:d.moId||'',timpProgram:d.timpProgram||'',itemNo:d.itemNo||'',
-        dimProgram:d.dimProgram||'',formatColi:d.formatColi||'',codMovex:d.codMovex||'',
+        moId:d.moId||'',
+        timpProgram:fmtCutMin(autoTimpProgr(p,deb)),
+        itemNo:p.parts?.[0]?.alias||'',
+        dimProgram:d.dimProgram||'',
+        formatColi:d.formatColi||displaySheet(p.sheetMaterial),
+        codMovex:d.codMovex||pickingData[sk]?.sheetCode||'',
         cutMinutes:p.cutMinutes||0
       });
     });
@@ -1776,7 +1810,12 @@ function startStatTimer(){
   if(stat.timerRef) clearInterval(stat.timerRef);
   stat.timerRef=setInterval(()=>{
     if(stat.active){const el=document.getElementById('stat-timer');if(el) el.textContent=formatDur(activeMs());}
-    else{const el=document.getElementById('run-timer');if(el) el.textContent=formatDur(runningMs());}
+    else{const el=document.getElementById('run-timer');if(el) el.textContent=formatDur(shiftState.active?shiftRunningMs():runningMs());}
+    // Contor Viteză Redusă — live, independent (NU se scade din timpul de funcționare)
+    if(stat.vr.active){
+      const vrEl=document.getElementById('vr-elapsed');
+      if(vrEl) vrEl.textContent=formatDur(Date.now()-stat.vr.startTime);
+    }
   },1000);
 }
 function runningMs(){if(stat.active) return stat.runAccum;return stat.runAccum+(stat.runStart?Date.now()-stat.runStart:0);}
@@ -2133,6 +2172,7 @@ function rapSetSort(col){if(rapSort.col===col) rapSort.asc=!rapSort.asc;else{rap
 
 function rapDebInput(el){
   const ok=el.dataset.ok;const nec=parseInt(el.dataset.nec)||0;const val=parseInt(el.value)||0;const sid=el.dataset.sid;
+  const cutMin=parseFloat(el.dataset.cutmin)||0;const origNec=parseFloat(el.dataset.orignec)||0;
   if(!opData[ok]) opData[ok]={coliDebitate:'',motivDepasire:'',completedAt:null,numOfSheetOverride:null};
   if(val>nec){
     ocPending={ok,value:el.value,nec,sid,prevValue:opData[ok].coliDebitate,el};
@@ -2154,6 +2194,13 @@ function rapDebInput(el){
   const pct=nec>0?Math.min(100,Math.round(val/nec*100)):0;
   const fill=document.getElementById('pbf-'+sid);if(fill){fill.style.width=pct+'%';fill.style.background=clr;}
   const lbl=document.getElementById('pbl-'+sid);if(lbl){lbl.textContent=`${val}/${nec}`;lbl.style.color=clr;}
+  // Recalculează live Timp Progr. — corelat cu cantitatea debitată
+  const tpgEl=document.getElementById('tpg-'+sid);
+  if(tpgEl&&origNec>0){
+    const autoT=cutMin*val/origNec;
+    tpgEl.textContent=fmtCutMin(autoT);
+    tpgEl.title=`Auto: ${cutMin}min × ${val}/${origNec}`;
+  }
 }
 function rapNecInput(el){
   const ok=el.dataset.ok;const origNec=parseInt(el.dataset.orig)||0;const newNec=parseInt(el.value)||0;
@@ -3865,12 +3912,18 @@ function endShift(){
   // Collect realizations
   const raps=allPrograms.filter(p=>p.machine===shiftState.machine).map(p=>{
     const ok=opKey(p);const d=opData[ok]||{};
+    const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
+    const deb=parseInt(d.coliDebitate)||0;
     return{source:p.source,programName:p.programName,machine:p.machine,
       sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
-      coliDebitate:parseInt(d.coliDebitate)||0,motivDepasire:d.motivDepasire||'',
+      coliDebitate:deb,motivDepasire:d.motivDepasire||'',
       scheduleNo:getSchedNo(p.source),sheetType:getSheetType(p.source),
-      moId:d.moId||'',timpProgram:d.timpProgram||'',itemNo:d.itemNo||'',
-      dimProgram:d.dimProgram||'',formatColi:d.formatColi||'',codMovex:d.codMovex||'',
+      moId:d.moId||'',
+      timpProgram:fmtCutMin(autoTimpProgr(p,deb)),
+      itemNo:p.parts?.[0]?.alias||'',
+      dimProgram:d.dimProgram||'',
+      formatColi:d.formatColi||displaySheet(p.sheetMaterial),
+      codMovex:d.codMovex||pickingData[sk]?.sheetCode||'',
       cutMinutes:p.cutMinutes||0};
   }).filter(r=>r.coliDebitate>0);
   // Combină cu realizările nesturilor deja șterse automat (raportate integral în timpul schimbului)
@@ -4034,7 +4087,12 @@ function renderRaportare(){
       oninput="rapFieldInput(this)" onclick="event.stopPropagation()">`;
   }
 
-  function buildRapRow(p){
+  function autoTimpProgr(p,deb){
+  const orig=p.numOfSheet||0;
+  if(!p.cutMinutes||!orig) return 0;
+  return p.cutMinutes*deb/orig;
+}
+function buildRapRow(p){
     const ok=opKey(p);const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
     ensureOpKey(ok);
     const d=opData[ok];
@@ -4043,21 +4101,29 @@ function renderRaportare(){
     const clr=deb===0?'var(--dim)':deb>=nec?'var(--ok)':'var(--accent)';
     const sid=safeId(ok);
     const fmtColi=d.formatColi||displaySheet(p.sheetMaterial);
+    // Cod Movex — preluat automat din Picking (sheetCode) dacă nu a fost suprascris manual
+    const pickCode=pickingData[sk]?.sheetCode||'';
+    const codMovexVal=d.codMovex||pickCode;
+    // Item No — primul alias din piesele programului
+    const itemNoVal=p.parts?.[0]?.alias||'';
+    // Timp Progr. — auto-calculat, corelat cu cantitatea debitată
+    const timpAuto=autoTimpProgr(p,deb);
     return `<tr class="data-row">
       <td><div class="tdi" style="text-align:center">${getPriority(p.source)?`<span style="display:inline-block;min-width:22px;height:22px;line-height:22px;border-radius:50%;background:rgba(240,160,0,.15);color:var(--accent);font-weight:700;font-size:.72rem;border:1px solid rgba(240,160,0,.4)">${getPriority(p.source)}</span>`:'—'}</div></td>
-      <td><div class="tdi" style="font-family:var(--mono);font-size:.73rem;font-weight:600">${esc(p.programName||p.source||'')}<div style="margin-top:2px;display:flex;gap:4px;flex-wrap:wrap">${sheetTypeBadge(p.source)}${p.cutMinutes?`<span style="font-size:.6rem;color:var(--info)">⏱ ${fmtCutMin(p.cutMinutes)}</span>`:''}</div></div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.73rem;font-weight:600">${esc(p.programName||p.source||'')}<div style="margin-top:2px;display:flex;gap:4px;flex-wrap:wrap">${sheetTypeBadge(p.source)}${p.cutMinutes?`<span style="font-size:.6rem;color:var(--info)">⏱ ${fmtCutMin(p.cutMinutes)} / ${p.numOfSheet||'?'} coli</span>`:''}</div></div></td>
       <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'moId',d.moId,'MO ID',80)}</div></td>
       <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem;color:var(--accent)">${esc(getSchedNo(p.source))||'—'}</div></td>
-      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'timpProgram',d.timpProgram,'hh:mm',60)}</div></td>
-      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'itemNo',d.itemNo,'Item No',80)}</div></td>
+      <td><div class="tdi" id="tpg-${sid}" style="font-family:var(--mono);font-size:.73rem;color:var(--info);font-weight:600" title="Auto: ${p.cutMinutes||0}min × ${deb}/${p.numOfSheet||0}">${fmtCutMin(timpAuto)}</div></td>
+      <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem" title="Primul alias din piese">${esc(itemNoVal)||'<span style="color:var(--dim)">—</span>'}</div></td>
       <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'dimProgram',d.dimProgram,'L×L×G',90)}</div></td>
       <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'formatColi',fmtColi,'L×l×g',90)}</div></td>
-      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'codMovex',d.codMovex,'Cod Movex',90)}</div></td>
+      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'codMovex',codMovexVal,'auto din Picking',90)}${pickCode&&!d.codMovex?`<div style="font-size:.6rem;color:var(--dim);margin-top:1px">↩ din Picking</div>`:''}</div></td>
       <td onclick="event.stopPropagation()"><div class="tdi" style="min-width:150px">
         <div class="prog-bar-wrap">
           <div class="prog-bar"><div class="prog-bar-fill" id="pbf-${sid}" style="width:${pct2}%;background:${clr}"></div></div>
           <input type="number" class="pk-input qty" style="width:56px;padding:3px 5px;font-size:.74rem" value="${esc(d.coliDebitate)}" min="0"
             data-ok="${ok.replace(/"/g,'&quot;')}" data-nec="${nec}" data-sid="${sid}" data-prev="${esc(d.coliDebitate)}"
+            data-cutmin="${p.cutMinutes||0}" data-orignec="${p.numOfSheet||0}"
             oninput="rapDebInput(this)" onclick="event.stopPropagation()">
           <span id="pbl-${sid}" class="prog-label" style="color:${clr}">${deb}/${nec}</span>
         </div>
@@ -4078,6 +4144,25 @@ function renderRaportare(){
     <div class="rap-wrap" style="overflow-x:auto"><table class="rap">
       <thead>${rapHeadRow}</thead>
       <tbody>${realizedProgs.map(buildRapRow).join('')}</tbody>
+    </table></div>`:'';
+
+  // ── "Realizate în Schimbul Meu" — nesturi finalizate în schimbul curent (golit la Pornește Schimb) ──
+  const myCompletedSection=(shiftState.active&&shiftState.completedRealizations.length)?`
+    <div class="s-head" style="margin-top:16px;color:var(--ok)">🏁 Realizate în Schimbul Meu (${shiftState.completedRealizations.length})</div>
+    <div class="rap-wrap" style="overflow-x:auto"><table class="rap">
+      <thead><tr><th>Program</th><th>MO ID</th><th>Schedule No</th><th>Timp Progr.</th><th>Item No</th><th>Dim. Program</th><th>Format Coli Deb.</th><th>Cod Movex</th><th>Cantitate</th><th>Coli Schedule</th></tr></thead>
+      <tbody>${shiftState.completedRealizations.map(r=>`<tr class="data-row">
+        <td><div class="tdi" style="font-family:var(--mono);font-size:.73rem;font-weight:600">${esc(r.programName||r.source)}<div style="margin-top:2px">${sheetTypeBadge(r.source)}</div></div></td>
+        <td><div class="tdi" style="font-size:.72rem">${esc(r.moId)||'—'}</div></td>
+        <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem;color:var(--accent)">${esc(r.scheduleNo)||'—'}</div></td>
+        <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem;color:var(--info)">${esc(r.timpProgram)}</div></td>
+        <td><div class="tdi" style="font-size:.72rem">${esc(r.itemNo)||'—'}</div></td>
+        <td><div class="tdi" style="font-size:.72rem">${esc(r.dimProgram)||'—'}</div></td>
+        <td><div class="tdi" style="font-size:.72rem">${esc(r.formatColi)}</div></td>
+        <td><div class="tdi" style="font-size:.72rem">${esc(r.codMovex)||'—'}</div></td>
+        <td><div class="tdi" style="text-align:center;color:var(--ok);font-weight:700">${r.coliDebitate}</div></td>
+        <td><div class="tdi" style="text-align:center">${r.numOfSheet}</div></td>
+      </tr>`).join('')}</tbody>
     </table></div>`:'';
 
   const totNec=machProgs.reduce((s,p)=>s+effectiveNec(p),0);
@@ -4109,6 +4194,7 @@ function renderRaportare(){
         <td style="text-align:center;color:var(--accent)">${totNec}</td></tr></tfoot>
     </table></div>`
     :`<div class="empty-state" style="padding:20px"><div class="et">${allPrograms.length?'Niciun nest pentru mașina '+esc(machine)+' sau toate au fost realizate.':'Încarcă nesturi pentru a vedea realizările.'}</div></div>`}
+    ${myCompletedSection}
     ${realSection}`;
 
   renderStatPanel();
@@ -4291,7 +4377,7 @@ function renderVrPanel(){
         background:${isOn?'#ffb300':'var(--surf2)'};color:${isOn?'#000':'var(--muted)'};border:1px solid ${isOn?'#ffb300':'var(--border2)'};font-weight:700;font-size:.8rem">
         🐌 ${isOn?'OPREȘTE':'Funcționez cu viteză redusă'}
       </button>
-      ${isOn?`<span style="font-size:.78rem;color:#ffb300;font-weight:700">${formatDur(elapsedVr)}</span>
+      ${isOn?`<span id="vr-elapsed" style="font-size:.78rem;color:#ffb300;font-weight:700">${formatDur(elapsedVr)}</span>
         <span style="font-size:.75rem;color:var(--muted);font-style:italic">— ${esc(stat.vr.desc)}</span>
         <span style="margin-left:auto;font-size:.65rem;color:var(--dim)">⚠ nu se scade din timpul de funcționare</span>`
         :`<span style="font-size:.7rem;color:var(--dim)">${stat.vrLog.length?stat.vrLog.length+' înregistrări în acest schimb':'Nu afectează cronometrul — doar observație'}</span>`}
@@ -4348,6 +4434,8 @@ async function openShiftReportsModal(){
           ${login.toLocaleDateString('ro-RO')} ${login.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'})}
           ${logout?' → '+logout.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'}):''}
         </span>
+        <button onclick="toggleReportDetail('${r.id}')" id="rbtn-${r.id}" title="Detalii"
+          style="background:var(--surf3);border:1px solid var(--border2);border-radius:5px;padding:3px 9px;cursor:pointer;color:var(--muted);font-size:.7rem">▾ Detalii</button>
         ${isDev?`<button onclick="deleteShiftReport('${r.id}')" title="Șterge raportul (Developer)"
           style="background:rgba(239,83,80,.1);border:1px solid rgba(239,83,80,.35);border-radius:5px;padding:3px 9px;cursor:pointer;color:var(--warn);font-size:.7rem">🗑 Șterge</button>`:''}
       </div>
@@ -4357,9 +4445,49 @@ async function openShiftReportsModal(){
         <span>⏸ Stationări: <strong style="color:var(--warn)">${evCount}</strong></span>
         <span>📦 Programe raportate: <strong style="color:var(--accent)">${realCount}</strong></span>
         <span>📊 Coli debitate: <strong style="color:var(--ok)">${totalDeb}</strong></span>
+        ${(r.vr_events||[]).length?`<span>🐌 Viteză redusă: <strong style="color:#ffb300">${(r.vr_events||[]).length}×</strong></span>`:''}
+      </div>
+      <div id="rdet-${r.id}" style="display:none;margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+        ${realCount?`<div style="font-size:.7rem;color:var(--muted);margin-bottom:5px;font-weight:600">📦 Realizări:</div>
+        <div style="overflow-x:auto;margin-bottom:10px"><table style="width:100%;border-collapse:collapse;font-size:.68rem">
+          <thead><tr style="background:var(--surf3)">${['Program','MO ID','Schedule No','Timp Progr.','Item No','Dim. Program','Format Coli','Cod Movex','Cantitate','Coli Sch.'].map(h=>`<th style="padding:4px 6px;text-align:left;color:var(--muted)">${h}</th>`).join('')}</tr></thead>
+          <tbody>${(r.realizations||[]).map(x=>`<tr style="border-top:1px solid var(--border)">
+            <td style="padding:4px 6px;font-family:var(--mono)">${esc(x.programName||x.source||'')}</td>
+            <td style="padding:4px 6px">${esc(x.moId||'—')}</td>
+            <td style="padding:4px 6px;color:var(--accent)">${esc(x.scheduleNo||'—')}</td>
+            <td style="padding:4px 6px;color:var(--info)">${esc(x.timpProgram||'—')}</td>
+            <td style="padding:4px 6px">${esc(x.itemNo||'—')}</td>
+            <td style="padding:4px 6px">${esc(x.dimProgram||'—')}</td>
+            <td style="padding:4px 6px">${esc(x.formatColi||'—')}</td>
+            <td style="padding:4px 6px">${esc(x.codMovex||'—')}</td>
+            <td style="padding:4px 6px;text-align:center;color:var(--ok);font-weight:700">${x.coliDebitate}</td>
+            <td style="padding:4px 6px;text-align:center">${x.numOfSheet}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>`:''}
+        ${evCount?`<div style="font-size:.7rem;color:var(--muted);margin-bottom:5px;font-weight:600">⏸ Stationări:</div>
+        <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px">${(r.events||[]).map(e=>`
+          <div style="display:flex;gap:10px;align-items:center;font-size:.7rem;background:var(--surf3);border-radius:5px;padding:4px 9px">
+            <span>${e.icon||''} ${esc(e.label||e.type)}</span>
+            ${e.desc?`<span style="color:var(--muted);font-style:italic">— ${esc(e.desc)}</span>`:''}
+            <span style="margin-left:auto;font-family:var(--mono);color:var(--warn);font-weight:700">${formatDur(e.duration||0)}</span>
+          </div>`).join('')}</div>`:''}
+        ${(r.vr_events||[]).length?`<div style="font-size:.7rem;color:#ffb300;margin-bottom:5px;font-weight:600">🐌 Viteză Redusă (observații):</div>
+        <div style="display:flex;flex-direction:column;gap:4px">${(r.vr_events||[]).map(v=>`
+          <div style="display:flex;gap:10px;align-items:center;font-size:.7rem;background:rgba(255,179,0,.08);border:1px solid rgba(255,179,0,.25);border-radius:5px;padding:4px 9px">
+            <span style="color:var(--muted);font-style:italic">${esc(v.desc)}</span>
+            <span style="margin-left:auto;font-family:var(--mono);color:#ffb300;font-weight:700">${formatDur(v.duration||0)}</span>
+          </div>`).join('')}</div>`:''}
       </div>
     </div>`;
   }).join('');
+}
+function toggleReportDetail(id){
+  const el=document.getElementById('rdet-'+id);
+  const btn=document.getElementById('rbtn-'+id);
+  if(!el) return;
+  const show=el.style.display==='none';
+  el.style.display=show?'block':'none';
+  if(btn) btn.textContent=show?'▴ Ascunde':'▾ Detalii';
 }
 
 async function deleteShiftReport(id){
