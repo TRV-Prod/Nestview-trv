@@ -621,6 +621,11 @@ table.stat-log tr:last-child td{border-bottom:none;}
     <span id="user-role-badge"></span>
     <span id="last-sync-lbl" style="font-size:.65rem;color:var(--dim);white-space:nowrap">—</span>
     <button onclick="openPrintQueue()" id="btn-pq-header" title="Coadă printare etichete" style="background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:4px 10px;color:var(--muted);cursor:pointer;font-size:.75rem;display:none" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--muted)'">🖨 <span id="pq-hdr-cnt">0</span></button>
+    <span style="display:flex;align-items:center;gap:2px;background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:2px" title="Mărime text aplicație">
+      <button onclick="adjustAppFontSize(-1)" style="background:none;border:none;color:var(--muted);cursor:pointer;padding:3px 7px;font-size:.7rem;border-radius:4px">A-</button>
+      <span id="app-font-pct" style="font-size:.65rem;color:var(--dim);min-width:32px;text-align:center">100%</span>
+      <button onclick="adjustAppFontSize(1)" style="background:none;border:none;color:var(--muted);cursor:pointer;padding:3px 7px;font-size:.85rem;border-radius:4px">A+</button>
+    </span>
     <button id="btn-refresh" onclick="manualRefresh()" title="Sincronizează cu serverul"
       style="background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:4px 10px;color:var(--muted);cursor:pointer;font-size:.75rem;transition:all .15s"
       onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--muted)'">⟳ Refresh</button>
@@ -745,7 +750,7 @@ let labelConfig={
 let printQueue=[];
 
 // ── Variabile Schimb ──
-let shiftState={active:false,machine:'',shiftLabel:'',loginTime:null,events:[],timerRef:null,completedRealizations:[]};
+let shiftState={active:false,machine:'',shiftLabel:'',loginTime:null,events:[],timerRef:null,completedRealizations:[],debBaseline:{}};
 let shiftMachine=''; // mașina selectată pentru schimb + Realizări (unificat)
 
 // ── Variabile Storage Supabase ──
@@ -998,14 +1003,16 @@ function autoDeleteCompletedSource(source){
     progsOfSource.forEach(p=>{
       const ok=opKey(p);const d=opData[ok]||{};
       const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
-      const deb=parseInt(d.coliDebitate)||0;
+      const debTotal=parseInt(d.coliDebitate)||0;
+      const debInc=incrementalDeb(ok,debTotal);
+      const timpInc=incrementalTimpProgr(p,ok,debTotal);
       shiftState.completedRealizations.push({
         source:p.source,programName:p.programName,machine:p.machine,
         sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
-        coliDebitate:deb,motivDepasire:d.motivDepasire||'',
+        coliDebitate:debInc,coliDebitateTotal:debTotal,motivDepasire:d.motivDepasire||'',
         scheduleNo:getSchedNo(p.source),sheetType:getSheetType(p.source),
         moId:d.moId||'',
-        timpProgram:fmtCutMin(autoTimpProgr(p,deb)),
+        timpProgram:fmtCutMin(timpInc),
         itemNo:p.parts?.[0]?.alias||'',
         dimProgram:d.dimProgram||'',
         formatColi:d.formatColi||displaySheet(p.sheetMaterial),
@@ -2194,12 +2201,16 @@ function rapDebInput(el){
   const pct=nec>0?Math.min(100,Math.round(val/nec*100)):0;
   const fill=document.getElementById('pbf-'+sid);if(fill){fill.style.width=pct+'%';fill.style.background=clr;}
   const lbl=document.getElementById('pbl-'+sid);if(lbl){lbl.textContent=`${val}/${nec}`;lbl.style.color=clr;}
-  // Recalculează live Timp Progr. — corelat cu cantitatea debitată
+  // Recalculează live Timp Progr. — DOAR partea din acest schimb (exclude raportări anterioare)
   const tpgEl=document.getElementById('tpg-'+sid);
   if(tpgEl&&origNec>0){
-    const autoT=cutMin*val/origNec;
-    tpgEl.textContent=fmtCutMin(autoT);
-    tpgEl.title=`Auto: ${cutMin}min × ${val}/${origNec}`;
+    const baseline=getDebBaseline(ok,val);
+    const totalT=cutMin*val/origNec;
+    const baseT=cutMin*baseline/origNec;
+    const incT=Math.max(0,totalT-baseT);
+    const incDeb=Math.max(0,val-baseline);
+    tpgEl.innerHTML=fmtCutMin(incT)+(baseline>0?`<div style="font-size:.6rem;color:var(--dim);font-weight:400">din ${val} total, ${baseline} raportat înainte</div>`:'');
+    tpgEl.title=`Schimb curent: ${incDeb} coli (din total ${val}). Raportat anterior: ${baseline} coli.`;
   }
 }
 function rapNecInput(el){
@@ -3886,7 +3897,7 @@ function startShift(){
   const shift=SHIFTS[sIdx]||detectCurrentShift();
   shiftState={
     active:true,machine:shiftMachine,shiftLabel:shift.label,
-    loginTime:new Date(),events:[],timerRef:null,shiftIdx:sIdx,completedRealizations:[]
+    loginTime:new Date(),events:[],timerRef:null,shiftIdx:sIdx,completedRealizations:[],debBaseline:{}
   };
   // Reset stationari for new shift
   stat.log=[];stat.active=null;stat.runAccum=0;stat.runStart=Date.now();
@@ -3935,13 +3946,15 @@ async function endShift(){
     const raps=allPrograms.filter(p=>p.machine===snapshot.machine).map(p=>{
       const ok=opKey(p);const d=opData[ok]||{};
       const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
-      const deb=parseInt(d.coliDebitate)||0;
+      const debTotal=parseInt(d.coliDebitate)||0;
+      const debInc=incrementalDeb(ok,debTotal);         // coli debitate DOAR în acest schimb
+      const timpInc=incrementalTimpProgr(p,ok,debTotal); // timp corespunzător DOAR acestui schimb
       return{source:p.source,programName:p.programName,machine:p.machine,
         sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
-        coliDebitate:deb,motivDepasire:d.motivDepasire||'',
+        coliDebitate:debInc,coliDebitateTotal:debTotal,motivDepasire:d.motivDepasire||'',
         scheduleNo:getSchedNo(p.source),sheetType:getSheetType(p.source),
         moId:d.moId||'',
-        timpProgram:fmtCutMin(autoTimpProgr(p,deb)),
+        timpProgram:fmtCutMin(timpInc),
         itemNo:p.parts?.[0]?.alias||'',
         dimProgram:d.dimProgram||'',
         formatColi:d.formatColi||displaySheet(p.sheetMaterial),
@@ -4139,6 +4152,25 @@ function renderRaportare(){
   if(!p.cutMinutes||!orig) return 0;
   return p.cutMinutes*deb/orig;
 }
+// Capturează, o singură dată per schimb, cantitatea deja raportată ÎNAINTE de acest schimb
+// (raportări din schimburi anterioare) — astfel Timp Progr. reflectă DOAR partea din schimbul curent
+function getDebBaseline(ok,currentDeb){
+  if(!shiftState.active) return 0;
+  if(shiftState.debBaseline[ok]===undefined) shiftState.debBaseline[ok]=currentDeb;
+  return shiftState.debBaseline[ok];
+}
+// Timp Progr. incremental = timpul corespunzător DOAR colilor debitate ÎN ACEST schimb
+function incrementalTimpProgr(p,ok,currentDeb){
+  const baseline=getDebBaseline(ok,currentDeb);
+  const totalT=autoTimpProgr(p,currentDeb);
+  const baseT=autoTimpProgr(p,baseline);
+  return Math.max(0,totalT-baseT);
+}
+// Cantitate incrementală (coli debitate DOAR în acest schimb)
+function incrementalDeb(ok,currentDeb){
+  const baseline=getDebBaseline(ok,currentDeb);
+  return Math.max(0,currentDeb-baseline);
+}
 function buildRapRow(p){
     const ok=opKey(p);const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
     ensureOpKey(ok);
@@ -4153,14 +4185,15 @@ function buildRapRow(p){
     const codMovexVal=d.codMovex||pickCode;
     // Item No — primul alias din piesele programului
     const itemNoVal=p.parts?.[0]?.alias||'';
-    // Timp Progr. — auto-calculat, corelat cu cantitatea debitată
-    const timpAuto=autoTimpProgr(p,deb);
+    // Timp Progr. — auto-calculat, DOAR partea debitată în acest schimb (exclude raportări anterioare)
+    const timpAuto=incrementalTimpProgr(p,ok,deb);
+    const baselineDeb=getDebBaseline(ok,deb);
     return `<tr class="data-row">
       <td><div class="tdi" style="text-align:center">${getPriority(p.source)?`<span style="display:inline-block;min-width:22px;height:22px;line-height:22px;border-radius:50%;background:rgba(240,160,0,.15);color:var(--accent);font-weight:700;font-size:.72rem;border:1px solid rgba(240,160,0,.4)">${getPriority(p.source)}</span>`:'—'}</div></td>
       <td><div class="tdi" style="font-family:var(--mono);font-size:.73rem;font-weight:600">${esc(p.programName||p.source||'')}<div style="margin-top:2px;display:flex;gap:4px;flex-wrap:wrap">${sheetTypeBadge(p.source)}${p.cutMinutes?`<span style="font-size:.6rem;color:var(--info)">⏱ ${fmtCutMin(p.cutMinutes)} / ${p.numOfSheet||'?'} coli</span>`:''}</div></div></td>
       <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'moId',d.moId,'MO ID',80)}</div></td>
       <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem;color:var(--accent)">${esc(getSchedNo(p.source))||'—'}</div></td>
-      <td><div class="tdi" id="tpg-${sid}" style="font-family:var(--mono);font-size:.73rem;color:var(--info);font-weight:600" title="Auto: ${p.cutMinutes||0}min × ${deb}/${p.numOfSheet||0}">${fmtCutMin(timpAuto)}</div></td>
+      <td><div class="tdi" id="tpg-${sid}" style="font-family:var(--mono);font-size:.73rem;color:var(--info);font-weight:600" title="Schimb curent: ${deb-baselineDeb} coli (din total ${deb}). Raportat anterior: ${baselineDeb} coli.">${fmtCutMin(timpAuto)}${baselineDeb>0?`<div style="font-size:.6rem;color:var(--dim);font-weight:400">din ${deb} total, ${baselineDeb} raportat înainte</div>`:''}</div></td>
       <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem" title="Primul alias din piese">${esc(itemNoVal)||'<span style="color:var(--dim)">—</span>'}</div></td>
       <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'dimProgram',d.dimProgram,'L×L×G',90)}</div></td>
       <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'formatColi',fmtColi,'L×l×g',90)}</div></td>
@@ -4662,6 +4695,26 @@ function closeQrScanner(){
   if(_qrStream){_qrStream.getTracks().forEach(t=>t.stop());_qrStream=null;}
   _qrScanKey=null;
 }
+</script>
+
+
+<script>
+/* ══ CONTROL GLOBAL MĂRIME CARACTERE — întreaga aplicație ══ */
+const APP_FONT_MIN=70,APP_FONT_MAX=150,APP_FONT_STEP=10;
+let appFontPct=parseInt(localStorage.getItem('nv_app_font_pct'))||100;
+
+function applyAppFontSize(){
+  document.documentElement.style.fontSize=appFontPct+'%';
+  const lbl=document.getElementById('app-font-pct');
+  if(lbl) lbl.textContent=appFontPct+'%';
+  localStorage.setItem('nv_app_font_pct',appFontPct);
+}
+function adjustAppFontSize(dir){
+  appFontPct=Math.min(APP_FONT_MAX,Math.max(APP_FONT_MIN,appFontPct+dir*APP_FONT_STEP));
+  applyAppFontSize();
+}
+// Aplică imediat la încărcare (înainte de login, ca să fie deja setat)
+applyAppFontSize();
 </script>
 </body>
 </html>
