@@ -3898,42 +3898,80 @@ function startShift(){
   showToast('▶ Schimb pornit — '+shiftMachine+' / '+shift.label);
 }
 
-function endShift(){
+async function endShift(){
   if(!shiftState.active) return;
   if(!confirm('Finalizezi schimbul? Datele vor fi salvate în baza de date.')) return;
+
   clearInterval(shiftState.timerRef);
-  // Collect events from stationari log + adaugă Pauza de masă (20 min) ca stationare fixă în raport
-  const lunchEnd=Date.now();
-  const lunchStart=lunchEnd-LUNCH_MS;
-  shiftState.events=[...stat.log,{
-    type:'LUNCH',label:'Pauză masă',icon:'🍽',desc:'',
-    startTime:lunchStart,endTime:lunchEnd,duration:LUNCH_MS
-  }];
-  // Collect realizations
-  const raps=allPrograms.filter(p=>p.machine===shiftState.machine).map(p=>{
-    const ok=opKey(p);const d=opData[ok]||{};
-    const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
-    const deb=parseInt(d.coliDebitate)||0;
-    return{source:p.source,programName:p.programName,machine:p.machine,
-      sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
-      coliDebitate:deb,motivDepasire:d.motivDepasire||'',
-      scheduleNo:getSchedNo(p.source),sheetType:getSheetType(p.source),
-      moId:d.moId||'',
-      timpProgram:fmtCutMin(autoTimpProgr(p,deb)),
-      itemNo:p.parts?.[0]?.alias||'',
-      dimProgram:d.dimProgram||'',
-      formatColi:d.formatColi||displaySheet(p.sheetMaterial),
-      codMovex:d.codMovex||pickingData[sk]?.sheetCode||'',
-      cutMinutes:p.cutMinutes||0};
-  }).filter(r=>r.coliDebitate>0);
-  // Combină cu realizările nesturilor deja șterse automat (raportate integral în timpul schimbului)
-  const allRaps=[...shiftState.completedRealizations,...raps];
-  shiftState.logoutTime=new Date();
-  // Save to DB
-  saveShiftReport(allRaps);
-  shiftState.active=false;
-  renderRaportare();
-  showToast('✓ Schimb finalizat și salvat');
+
+  // Oprește AUTOMAT orice stationare în curs — înainte de a finaliza schimbul
+  if(stat.active){
+    console.log('[NV] Oprire automată stationare activă la finalizare schimb:',stat.active.label);
+    statStop();
+  }
+  // Oprește AUTOMAT contorul de Viteză Redusă (dacă era pornit) — se salvează ca observație închisă
+  let vrEventsFinal=[...stat.vrLog];
+  if(stat.vr.active){
+    console.log('[NV] Oprire automată Viteză Redusă la finalizare schimb');
+    const vrEnd=Date.now();
+    vrEventsFinal.push({desc:stat.vr.desc,startTime:stat.vr.startTime,endTime:vrEnd,duration:vrEnd-stat.vr.startTime});
+    stat.vr={active:false,desc:'',startTime:null};
+  }
+
+  // Snapshot COMPLET al schimbului ÎNAINTE de orice — indiferent ce urmează,
+  // avem datele necesare pentru salvare + UI-ul poate fi resetat oricând sigur.
+  const snapshot={...shiftState,vrEvents:vrEventsFinal};
+
+  try{
+    // Collect events from stationari log (deja include stationarea abia oprită) + Pauza de masă fixă
+    const lunchEnd=Date.now();
+    const lunchStart=lunchEnd-LUNCH_MS;
+    snapshot.events=[...stat.log,{
+      type:'LUNCH',label:'Pauză masă',icon:'🍽',desc:'',
+      startTime:lunchStart,endTime:lunchEnd,duration:LUNCH_MS
+    }];
+
+    // Collect realizations
+    const raps=allPrograms.filter(p=>p.machine===snapshot.machine).map(p=>{
+      const ok=opKey(p);const d=opData[ok]||{};
+      const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
+      const deb=parseInt(d.coliDebitate)||0;
+      return{source:p.source,programName:p.programName,machine:p.machine,
+        sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
+        coliDebitate:deb,motivDepasire:d.motivDepasire||'',
+        scheduleNo:getSchedNo(p.source),sheetType:getSheetType(p.source),
+        moId:d.moId||'',
+        timpProgram:fmtCutMin(autoTimpProgr(p,deb)),
+        itemNo:p.parts?.[0]?.alias||'',
+        dimProgram:d.dimProgram||'',
+        formatColi:d.formatColi||displaySheet(p.sheetMaterial),
+        codMovex:d.codMovex||pickingData[sk]?.sheetCode||'',
+        cutMinutes:p.cutMinutes||0};
+    }).filter(r=>r.coliDebitate>0);
+
+    // Combină cu realizările nesturilor deja șterse automat (raportate integral în timpul schimbului)
+    const allRaps=[...snapshot.completedRealizations,...raps];
+    snapshot.logoutTime=new Date();
+
+    // Salvare — AȘTEPTATĂ, cu eroare vizibilă dacă eșuează
+    showToast('Se salvează raportul de schimb…','ok',8000);
+    const saveResult=await saveShiftReport(snapshot,allRaps);
+    if(saveResult.ok){
+      showToast('✓ Schimb finalizat și salvat cu succes');
+    } else {
+      showToast('⚠ Schimbul s-a încheiat dar SALVAREA A EȘUAT: '+saveResult.error,'err',10000);
+      console.error('[NV] saveShiftReport FAILED:',saveResult.error);
+    }
+  }catch(e){
+    console.error('[NV] endShift error:',e);
+    showToast('⚠ Eroare la finalizarea schimbului: '+e.message,'err',10000);
+  }finally{
+    // GARANTAT — indiferent de erori, UI-ul revine la starea inactivă (contorul nu rămâne blocat)
+    shiftState.active=false;
+    shiftState.completedRealizations=[];
+    stat.log=[];stat.vrLog=[];stat.active=null;stat.vr={active:false,desc:'',startTime:null};
+    renderRaportare();
+  }
 }
 
 function updateShiftDisplay(){
@@ -3951,31 +3989,40 @@ function updateShiftDisplay(){
   if(runEl) runEl.textContent=formatDur(running);
 }
 
-async function saveShiftReport(realizations){
-  if(!sb||!currentUser) return;
-  const eventsMs=shiftState.events.reduce((s,e)=>s+(e.duration||0),0);
-  const payload={
-    machine:shiftState.machine,
-    operator_id:currentUser.id,
-    operator_name:currentProfile?.display_name||'',
-    shift_label:shiftState.shiftLabel,
-    login_time:shiftState.loginTime.toISOString(),
-    logout_time:(shiftState.logoutTime||new Date()).toISOString(),
-    total_ms:shiftElapsedMs(),
-    running_ms:shiftRunningMs(),
-    events:shiftState.events.map(e=>({
-      type:e.type,label:e.label,icon:e.icon||'',desc:e.desc||'',
-      duration:e.duration,startTime:new Date(e.startTime).toISOString(),
-      endTime:new Date(e.endTime).toISOString()
-    })),
-    realizations:realizations||[],
-    vr_events:[...stat.vrLog,...(stat.vr.active?[{desc:stat.vr.desc,startTime:stat.vr.startTime,endTime:Date.now(),duration:Date.now()-stat.vr.startTime}]:[])].map(v=>({
-      desc:v.desc,startTime:new Date(v.startTime).toISOString(),endTime:new Date(v.endTime).toISOString(),duration:v.duration
-    }))
-  };
-  const{error}=await sb.from('shift_reports').insert(payload);
-  if(error) console.warn('[NV] saveShiftReport error:',error.message);
-  else console.log('[NV] Shift saved to DB');
+async function saveShiftReport(snapshot,realizations){
+  if(!sb||!currentUser) return{ok:false,error:'Fără conexiune Supabase'};
+  try{
+    const totalMs=snapshot.logoutTime.getTime()-snapshot.loginTime.getTime();
+    const eventsMs=(snapshot.events||[]).reduce((s,e)=>s+(e.duration||0),0);
+    const activeMsAtEnd=0; // stationarea activă e deja oprită înainte de a ajunge aici
+    const runningMs=Math.max(0,totalMs-eventsMs);
+    const payload={
+      machine:snapshot.machine,
+      operator_id:currentUser.id,
+      operator_name:currentProfile?.display_name||'',
+      shift_label:snapshot.shiftLabel,
+      login_time:snapshot.loginTime.toISOString(),
+      logout_time:snapshot.logoutTime.toISOString(),
+      total_ms:totalMs,
+      running_ms:runningMs,
+      events:(snapshot.events||[]).map(e=>({
+        type:e.type,label:e.label,icon:e.icon||'',desc:e.desc||'',
+        duration:e.duration,startTime:new Date(e.startTime).toISOString(),
+        endTime:new Date(e.endTime).toISOString()
+      })),
+      realizations:realizations||[],
+      vr_events:(snapshot.vrEvents||[]).map(v=>({
+        desc:v.desc,startTime:new Date(v.startTime).toISOString(),endTime:new Date(v.endTime).toISOString(),duration:v.duration
+      }))
+    };
+    const{error}=await sb.from('shift_reports').insert(payload);
+    if(error){console.warn('[NV] saveShiftReport error:',error.message);return{ok:false,error:error.message};}
+    console.log('[NV] Shift saved to DB');
+    return{ok:true};
+  }catch(e){
+    console.error('[NV] saveShiftReport exception:',e);
+    return{ok:false,error:e.message};
+  }
 }
 
 /* ══ REDESIGN RENDERRAPORTARE ══ */
