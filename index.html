@@ -1428,10 +1428,13 @@ async function cropAndAttachImages(page,records,partsArr,pageH){const scale=2;co
 async function parseBodorPDF(pdf){const machine='Bodor';let jobNum='';const results=[];let cur=null;let inParts=false;const thumbs={};for(let pn=1;pn<=pdf.numPages;pn++){const page=await pdf.getPage(pn);const tc=await page.getTextContent();const rows=groupRows(tc.items);if(!jobNum) for(const r of rows){const m=r.text.match(/JobNum:\s*(\S+)/);if(m){jobNum=m[1];break;}}const rHead=rows.find(r=>/^Result\d+$/.test(r.text.trim()));if(rHead){if(cur) results.push(cur);const rNum=rHead.text.match(/(\d+)/)[1];cur={type:'bodor',machine,source:jobNum||'?',jobNum,resultNum:parseInt(rNum),programName:`Result${rNum}`,nestName:jobNum||'?',plateNum:'',sheetMaterial:'',numOfSheet:0,parts:[],thumbnail:null,cutMinutes:0};inParts=false;try{const vp=page.getViewport({scale:.55});const cv=document.createElement('canvas');cv.width=vp.width;cv.height=vp.height;await page.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise;thumbs[rNum]=cv.toDataURL('image/jpeg',.75);}catch(_){}}if(!cur) continue;
   // TotalTime: rând cu procente + timpi (ex: "56.049% 43.95% 0.000 kg 80.974 m 00:18:23 0 00:00:00 00:37:13")
   if(cur&&!cur.cutMinutes){
-    const tmAll=[...r.text.matchAll(/(\d{1,2}):(\d{2}):(\d{2})/g)];
-    if(tmAll.length&&/%/.test(r.text)){
-      const last=tmAll[tmAll.length-1];
-      cur.cutMinutes=Math.round((parseInt(last[1])*60+parseInt(last[2])+parseInt(last[3])/60)*10)/10;
+    const timeRow=rows.find(rr=>/%/.test(rr.text)&&/\d{1,2}:\d{2}:\d{2}/.test(rr.text));
+    if(timeRow){
+      const tmAll=[...timeRow.text.matchAll(/(\d{1,2}):(\d{2}):(\d{2})/g)];
+      if(tmAll.length){
+        const last=tmAll[tmAll.length-1];
+        cur.cutMinutes=Math.round((parseInt(last[1])*60+parseInt(last[2])+parseInt(last[3])/60)*10)/10;
+      }
     }
   }if(!cur.plateNum) for(const r of rows){const m=r.text.match(/PlateNum:\s*(\S+)/);if(m){cur.plateNum=m[1];break;}}if(!cur.sheetMaterial){const mat=extractMaterial(rows);if(mat){cur.sheetMaterial=mat.sheetSize;cur.numOfSheet=mat.numOfSheet;}}if(!inParts){const hdr=rows.find(r=>r.text.includes('PartName')&&r.text.includes('NestedCount'));if(hdr) inParts=true;}if(inParts){const pageRows=rows.filter(r=>{const t=r.text.trim();return t&&!/^Page\s+\d+$/.test(t)&&!t.includes('PartName')&&!t.includes('PartImage');});const records=groupIntoRecords(pageRows);for(const rec of records){const part=extractPartFromRecord(rec);if(part&&!cur.parts.find(p=>p.alias===part.alias)) cur.parts.push(part);}if(records.length>0){const pageH=page.getViewport({scale:1}).height;await cropAndAttachImages(page,records,cur.parts,pageH);}}}if(cur) results.push(cur);results.forEach(r=>{r.thumbnail=thumbs[String(r.resultNum)]||null;});return{jobNum,results};}
 
