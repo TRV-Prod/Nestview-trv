@@ -986,6 +986,31 @@ function deleteImageCache(source){
 
 
 /* ══ AUTO-DELETE NESTURI COMPLETE ══ */
+function autoTimpProgr(p,deb){
+  const orig=p.numOfSheet||0;
+  if(!p.cutMinutes||!orig) return 0;
+  return p.cutMinutes*deb/orig;
+}
+// Capturează, o singură dată per schimb, cantitatea deja raportată ÎNAINTE de acest schimb
+// (raportări din schimburi anterioare) — astfel Timp Progr. reflectă DOAR partea din schimbul curent
+function getDebBaseline(ok,currentDeb){
+  if(!shiftState.active) return 0;
+  if(shiftState.debBaseline[ok]===undefined) shiftState.debBaseline[ok]=currentDeb;
+  return shiftState.debBaseline[ok];
+}
+// Timp Progr. incremental = timpul corespunzător DOAR colilor debitate ÎN ACEST schimb
+function incrementalTimpProgr(p,ok,currentDeb){
+  const baseline=getDebBaseline(ok,currentDeb);
+  const totalT=autoTimpProgr(p,currentDeb);
+  const baseT=autoTimpProgr(p,baseline);
+  return Math.max(0,totalT-baseT);
+}
+// Cantitate incrementală (coli debitate DOAR în acest schimb)
+function incrementalDeb(ok,currentDeb){
+  const baseline=getDebBaseline(ok,currentDeb);
+  return Math.max(0,currentDeb-baseline);
+}
+
 function checkSourceComplete(source){
   // Toate programele sursei sunt raportate integral?
   const progs=allPrograms.filter(p=>p.source===source);
@@ -1004,8 +1029,8 @@ function autoDeleteCompletedSource(source){
       const ok=opKey(p);const d=opData[ok]||{};
       const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
       const debTotal=parseInt(d.coliDebitate)||0;
-      const debInc=incrementalDeb(ok,debTotal);
-      const timpInc=incrementalTimpProgr(p,ok,debTotal);
+      const debInc=(typeof incrementalDeb==='function')?incrementalDeb(ok,debTotal):debTotal;
+      const timpInc=(typeof incrementalTimpProgr==='function')?incrementalTimpProgr(p,ok,debTotal):autoTimpProgr(p,debTotal);
       shiftState.completedRealizations.push({
         source:p.source,programName:p.programName,machine:p.machine,
         sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
@@ -3943,12 +3968,16 @@ async function endShift(){
     }];
 
     // Collect realizations
+    // Fallback defensiv — dacă funcțiile de calcul incremental lipsesc dintr-un motiv oarecare,
+    // folosim valorile TOTALE (comportament vechi) în loc să blocăm salvarea schimbului
+    const _incDeb=typeof incrementalDeb==='function'?incrementalDeb:(ok,d)=>d;
+    const _incTimp=typeof incrementalTimpProgr==='function'?incrementalTimpProgr:(p,ok,d)=>autoTimpProgr(p,d);
     const raps=allPrograms.filter(p=>p.machine===snapshot.machine).map(p=>{
       const ok=opKey(p);const d=opData[ok]||{};
       const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
       const debTotal=parseInt(d.coliDebitate)||0;
-      const debInc=incrementalDeb(ok,debTotal);         // coli debitate DOAR în acest schimb
-      const timpInc=incrementalTimpProgr(p,ok,debTotal); // timp corespunzător DOAR acestui schimb
+      const debInc=_incDeb(ok,debTotal);         // coli debitate DOAR în acest schimb
+      const timpInc=_incTimp(p,ok,debTotal);     // timp corespunzător DOAR acestui schimb
       return{source:p.source,programName:p.programName,machine:p.machine,
         sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
         coliDebitate:debInc,coliDebitateTotal:debTotal,motivDepasire:d.motivDepasire||'',
@@ -4147,30 +4176,7 @@ function renderRaportare(){
       oninput="rapFieldInput(this)" onclick="event.stopPropagation()">`;
   }
 
-  function autoTimpProgr(p,deb){
-  const orig=p.numOfSheet||0;
-  if(!p.cutMinutes||!orig) return 0;
-  return p.cutMinutes*deb/orig;
-}
-// Capturează, o singură dată per schimb, cantitatea deja raportată ÎNAINTE de acest schimb
-// (raportări din schimburi anterioare) — astfel Timp Progr. reflectă DOAR partea din schimbul curent
-function getDebBaseline(ok,currentDeb){
-  if(!shiftState.active) return 0;
-  if(shiftState.debBaseline[ok]===undefined) shiftState.debBaseline[ok]=currentDeb;
-  return shiftState.debBaseline[ok];
-}
-// Timp Progr. incremental = timpul corespunzător DOAR colilor debitate ÎN ACEST schimb
-function incrementalTimpProgr(p,ok,currentDeb){
-  const baseline=getDebBaseline(ok,currentDeb);
-  const totalT=autoTimpProgr(p,currentDeb);
-  const baseT=autoTimpProgr(p,baseline);
-  return Math.max(0,totalT-baseT);
-}
-// Cantitate incrementală (coli debitate DOAR în acest schimb)
-function incrementalDeb(ok,currentDeb){
-  const baseline=getDebBaseline(ok,currentDeb);
-  return Math.max(0,currentDeb-baseline);
-}
+  
 function buildRapRow(p){
     const ok=opKey(p);const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
     ensureOpKey(ok);
