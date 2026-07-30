@@ -749,6 +749,22 @@ let labelConfig={
 };
 let printQueue=[];
 
+// ── Coloane Raportare — configurabile (ordine, vizibilitate, lățime) ──
+let rapColumns=[
+  {key:'prio',        label:'Prio.',            show:true, width:50},
+  {key:'program',     label:'Program',          show:true, width:150},
+  {key:'moId',        label:'MO ID',            show:true, width:100},
+  {key:'schedNo',     label:'Schedule No',      show:true, width:110},
+  {key:'timpProgr',   label:'Timp Progr.',      show:true, width:110},
+  {key:'timpRealizat',label:'Timp Realizat',    show:true, width:90},
+  {key:'itemNo',      label:'Item No',          show:true, width:100},
+  {key:'dimProgram',  label:'Dim. Program',     show:true, width:110},
+  {key:'formatColi',  label:'Format Coli Deb.', show:true, width:110},
+  {key:'codMovex',    label:'Cod Movex',        show:true, width:110},
+  {key:'cantitate',   label:'Cantitate',        show:true, width:170},
+  {key:'coliSchedule',label:'Coli Schedule',    show:true, width:90},
+];
+
 // ── Variabile Schimb ──
 let shiftState={active:false,machine:'',shiftLabel:'',loginTime:null,events:[],timerRef:null,completedRealizations:[],debBaseline:{}};
 let shiftMachine=''; // mașina selectată pentru schimb + Realizări (unificat)
@@ -805,8 +821,8 @@ function sheetNeed(key){return allPrograms.filter(p=>sheetKey(p.sheetMaterial,ge
 function opKey(p){return `${p.source}|||${p.programName}`;}
 function effectiveNec(p){const k=opKey(p);const ov=parseInt(opData[k]?.numOfSheetOverride);return(ov>0?ov:null)||(p.numOfSheet||0);}
 function ensurePick(key){if(!pickingData[key]) pickingData[key]={sheetCode:'',reservedQty:'',reservedAt:null,surplusMotiv:''};}
-function ensureOp(p){const k=opKey(p);if(!opData[k]) opData[k]={coliDebitate:'',motivDepasire:'',completedAt:null,numOfSheetOverride:null,moId:'',timpProgram:'',itemNo:'',dimProgram:'',formatColi:'',codMovex:''};}
-function ensureOpKey(k){if(!opData[k]) opData[k]={coliDebitate:'',motivDepasire:'',completedAt:null,numOfSheetOverride:null,moId:'',timpProgram:'',itemNo:'',dimProgram:'',formatColi:'',codMovex:''};}
+function ensureOp(p){const k=opKey(p);if(!opData[k]) opData[k]={coliDebitate:'',motivDepasire:'',completedAt:null,numOfSheetOverride:null,moId:'',timpProgram:'',timpRealizat:'',itemNo:'',dimProgram:'',formatColi:'',codMovex:''};}
+function ensureOpKey(k){if(!opData[k]) opData[k]={coliDebitate:'',motivDepasire:'',completedAt:null,numOfSheetOverride:null,moId:'',timpProgram:'',timpRealizat:'',itemNo:'',dimProgram:'',formatColi:'',codMovex:''};}
 function isCompleted(p){const d=opData[opKey(p)];const deb=parseInt(d?.coliDebitate)||0;return deb>0&&deb>=effectiveNec(p);}
 
 /* ══ Tab Management ══ */
@@ -1038,6 +1054,7 @@ function autoDeleteCompletedSource(source){
         scheduleNo:getSchedNo(p.source),sheetType:getSheetType(p.source),
         moId:d.moId||'',
         timpProgram:fmtCutMin(timpInc),
+        timpRealizat:d.timpRealizat||'',
         itemNo:p.parts?.[0]?.alias||'',
         dimProgram:d.dimProgram||'',
         formatColi:d.formatColi||displaySheet(p.sheetMaterial),
@@ -2863,7 +2880,7 @@ async function loadAllData(){
   if(pd) pd.forEach(d=>{pickingData[d.sheet_key]={sheetCode:d.sheet_code||'',reservedQty:String(d.reserved_qty||''),reservedAt:d.reserved_at,surplusMotiv:d.surplus_motiv||''};});
   // Operational
   const{data:od}=await sb.from('operational_data').select('*');
-  if(od) od.forEach(d=>{opData[d.op_key]={coliDebitate:String(d.coli_debitate||''),motivDepasire:d.motiv_depasire||'',numOfSheetOverride:d.num_sheet_override||null,completedAt:d.completed_at||null,moId:d.mo_id||'',timpProgram:d.timp_program||'',itemNo:d.item_no||'',dimProgram:d.dim_program||'',formatColi:d.format_coli||'',codMovex:d.cod_movex||''};});
+  if(od) od.forEach(d=>{opData[d.op_key]={coliDebitate:String(d.coli_debitate||''),motivDepasire:d.motiv_depasire||'',numOfSheetOverride:d.num_sheet_override||null,completedAt:d.completed_at||null,moId:d.mo_id||'',timpProgram:d.timp_program||'',timpRealizat:d.timp_realizat||'',itemNo:d.item_no||'',dimProgram:d.dim_program||'',formatColi:d.format_coli||'',codMovex:d.cod_movex||''};});
   // Stock locations
   const{data:sl}=await sb.from('stock_locations').select('*').order('sort_order');
   if(sl&&sl.length) stockLocations=sl;
@@ -2881,6 +2898,14 @@ async function loadAllData(){
     if(lc?.value&&Array.isArray(lc.value.fields)){
       Object.assign(labelConfig,lc.value);
       localStorage.setItem('nv_label_cfg',JSON.stringify(labelConfig));
+    }
+  }catch(_){}
+  // Config coloane Raportare din Supabase
+  try{
+    const{data:rc}=await sb.from('app_settings').select('value').eq('key','rap_columns').maybeSingle();
+    if(rc?.value&&Array.isArray(rc.value)&&rc.value.length){
+      rapColumns=rc.value;
+      localStorage.setItem('nv_rap_columns',JSON.stringify(rapColumns));
     }
   }catch(_){}
 
@@ -2986,7 +3011,7 @@ async function saveOpToSupabase(key){
   await sb.from('operational_data').upsert({
     op_key:key,coli_debitate:parseInt(d.coliDebitate)||0,motiv_depasire:d.motivDepasire||'',
     num_sheet_override:d.numOfSheetOverride||null,completed_at:d.completedAt||null,
-    mo_id:d.moId||'',timp_program:d.timpProgram||'',item_no:d.itemNo||'',
+    mo_id:d.moId||'',timp_program:d.timpProgram||'',timp_realizat:d.timpRealizat||'',item_no:d.itemNo||'',
     dim_program:d.dimProgram||'',format_coli:d.formatColi||'',cod_movex:d.codMovex||'',
     updated_by:currentUser.id,updated_at:new Date().toISOString()
   },{onConflict:'op_key'});
@@ -3984,6 +4009,7 @@ async function endShift(){
         scheduleNo:getSchedNo(p.source),sheetType:getSheetType(p.source),
         moId:d.moId||'',
         timpProgram:fmtCutMin(timpInc),
+        timpRealizat:d.timpRealizat||'',
         itemNo:p.parts?.[0]?.alias||'',
         dimProgram:d.dimProgram||'',
         formatColi:d.formatColi||displaySheet(p.sheetMaterial),
@@ -4171,8 +4197,10 @@ function renderRaportare(){
   const th=(col,label)=>`<th onclick="rapSetSort('${col}')" style="cursor:pointer;white-space:nowrap">${label}${si(col)}</th>`;
 
   function rf(ok,field,val,ph,w){
-    return `<input type="text" class="pk-input code" style="width:${w||90}px;font-size:.71rem;padding:3px 6px"
-      value="${esc(val||'')}" placeholder="${ph||''}" data-ok="${ok.replace(/"/g,'&quot;')}" data-field="${field}"
+    const dis=!shiftState.active;
+    return `<input type="text" class="pk-input code" style="width:${w||90}px;font-size:.71rem;padding:3px 6px;${dis?'opacity:.5;cursor:not-allowed':''}"
+      value="${esc(val||'')}" placeholder="${dis?'Pornește schimbul':(ph||'')}" data-ok="${ok.replace(/"/g,'&quot;')}" data-field="${field}"
+      ${dis?'disabled title="Pornește schimbul pentru a raporta"':''}
       oninput="rapFieldInput(this)" onclick="event.stopPropagation()">`;
   }
 
@@ -4186,44 +4214,56 @@ function buildRapRow(p){
     const clr=deb===0?'var(--dim)':deb>=nec?'var(--ok)':'var(--accent)';
     const sid=safeId(ok);
     const fmtColi=d.formatColi||displaySheet(p.sheetMaterial);
-    // Cod Movex — preluat automat din Picking (sheetCode) dacă nu a fost suprascris manual
     const pickCode=pickingData[sk]?.sheetCode||'';
     const codMovexVal=d.codMovex||pickCode;
-    // Item No — primul alias din piesele programului
     const itemNoVal=p.parts?.[0]?.alias||'';
-    // Timp Progr. — auto-calculat, DOAR partea debitată în acest schimb (exclude raportări anterioare)
     const timpAuto=incrementalTimpProgr(p,ok,deb);
     const baselineDeb=getDebBaseline(ok,deb);
-    return `<tr class="data-row">
-      <td><div class="tdi" style="text-align:center">${getPriority(p.source)?`<span style="display:inline-block;min-width:22px;height:22px;line-height:22px;border-radius:50%;background:rgba(240,160,0,.15);color:var(--accent);font-weight:700;font-size:.72rem;border:1px solid rgba(240,160,0,.4)">${getPriority(p.source)}</span>`:'—'}</div></td>
-      <td><div class="tdi" style="font-family:var(--mono);font-size:.73rem;font-weight:600">${esc(p.programName||p.source||'')}<div style="margin-top:2px;display:flex;gap:4px;flex-wrap:wrap">${sheetTypeBadge(p.source)}${p.cutMinutes?`<span style="font-size:.6rem;color:var(--info)">⏱ ${fmtCutMin(p.cutMinutes)} / ${p.numOfSheet||'?'} coli</span>`:''}</div></div></td>
-      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'moId',d.moId,'MO ID',80)}</div></td>
-      <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem;color:var(--accent)">${esc(getSchedNo(p.source))||'—'}</div></td>
-      <td><div class="tdi" id="tpg-${sid}" style="font-family:var(--mono);font-size:.73rem;color:var(--info);font-weight:600" title="Schimb curent: ${deb-baselineDeb} coli (din total ${deb}). Raportat anterior: ${baselineDeb} coli.">${fmtCutMin(timpAuto)}${baselineDeb>0?`<div style="font-size:.6rem;color:var(--dim);font-weight:400">din ${deb} total, ${baselineDeb} raportat înainte</div>`:''}</div></td>
-      <td><div class="tdi" style="font-family:var(--mono);font-size:.72rem" title="Primul alias din piese">${esc(itemNoVal)||'<span style="color:var(--dim)">—</span>'}</div></td>
-      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'dimProgram',d.dimProgram,'L×L×G',90)}</div></td>
-      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'formatColi',fmtColi,'L×l×g',90)}</div></td>
-      <td onclick="event.stopPropagation()"><div class="tdi">${rf(ok,'codMovex',codMovexVal,'auto din Picking',90)}${pickCode&&!d.codMovex?`<div style="font-size:.6rem;color:var(--dim);margin-top:1px">↩ din Picking</div>`:''}</div></td>
-      <td onclick="event.stopPropagation()"><div class="tdi" style="min-width:150px">
+    const dis=!shiftState.active;
+
+    const cells={
+      prio:`<div class="tdi" style="text-align:center">${getPriority(p.source)?`<span style="display:inline-block;min-width:22px;height:22px;line-height:22px;border-radius:50%;background:rgba(240,160,0,.15);color:var(--accent);font-weight:700;font-size:.72rem;border:1px solid rgba(240,160,0,.4)">${getPriority(p.source)}</span>`:'—'}</div>`,
+      program:`<div class="tdi" style="font-family:var(--mono);font-size:.73rem;font-weight:600">${esc(p.programName||p.source||'')}<div style="margin-top:2px;display:flex;gap:4px;flex-wrap:wrap">${sheetTypeBadge(p.source)}${p.cutMinutes?`<span style="font-size:.6rem;color:var(--info)">⏱ ${fmtCutMin(p.cutMinutes)} / ${p.numOfSheet||'?'} coli</span>`:''}</div></div>`,
+      moId:`<div class="tdi" onclick="event.stopPropagation()">${rf(ok,'moId',d.moId,'MO ID',80)}</div>`,
+      schedNo:`<div class="tdi" style="font-family:var(--mono);font-size:.72rem;color:var(--accent)">${esc(getSchedNo(p.source))||'—'}</div>`,
+      timpProgr:`<div class="tdi" id="tpg-${sid}" style="font-family:var(--mono);font-size:.73rem;color:var(--info);font-weight:600" title="Schimb curent: ${deb-baselineDeb} coli (din total ${deb}). Raportat anterior: ${baselineDeb} coli.">${fmtCutMin(timpAuto)}${baselineDeb>0?`<div style="font-size:.6rem;color:var(--dim);font-weight:400">din ${deb} total, ${baselineDeb} raportat înainte</div>`:''}</div>`,
+      timpRealizat:`<div class="tdi" onclick="event.stopPropagation()">${rf(ok,'timpRealizat',d.timpRealizat,'hh:mm',65)}</div>`,
+      itemNo:`<div class="tdi" style="font-family:var(--mono);font-size:.72rem" title="Primul alias din piese">${esc(itemNoVal)||'<span style="color:var(--dim)">—</span>'}</div>`,
+      dimProgram:`<div class="tdi" onclick="event.stopPropagation()">${rf(ok,'dimProgram',d.dimProgram,'L×L×G',90)}</div>`,
+      formatColi:`<div class="tdi" onclick="event.stopPropagation()">${rf(ok,'formatColi',fmtColi,'L×l×g',90)}</div>`,
+      codMovex:`<div class="tdi" onclick="event.stopPropagation()">${rf(ok,'codMovex',codMovexVal,'auto din Picking',90)}${pickCode&&!d.codMovex?`<div style="font-size:.6rem;color:var(--dim);margin-top:1px">↩ din Picking</div>`:''}</div>`,
+      cantitate:`<div class="tdi" onclick="event.stopPropagation()" style="min-width:150px">
         <div class="prog-bar-wrap">
           <div class="prog-bar"><div class="prog-bar-fill" id="pbf-${sid}" style="width:${pct2}%;background:${clr}"></div></div>
-          <input type="number" class="pk-input qty" style="width:56px;padding:3px 5px;font-size:.74rem" value="${esc(d.coliDebitate)}" min="0"
+          <input type="number" class="pk-input qty" style="width:56px;padding:3px 5px;font-size:.74rem;${dis?'opacity:.5;cursor:not-allowed':''}" value="${esc(d.coliDebitate)}" min="0" ${dis?'disabled title="Pornește schimbul pentru a raporta"':''}
             data-ok="${ok.replace(/"/g,'&quot;')}" data-nec="${nec}" data-sid="${sid}" data-prev="${esc(d.coliDebitate)}"
             data-cutmin="${p.cutMinutes||0}" data-orignec="${p.numOfSheet||0}"
             oninput="rapDebInput(this)" onclick="event.stopPropagation()">
           <span id="pbl-${sid}" class="prog-label" style="color:${clr}">${deb}/${nec}</span>
         </div>
-      </div></td>
-      <td onclick="event.stopPropagation()"><div class="tdi">
-        <input type="number" class="pk-input qty" style="width:54px;text-align:center;padding:3px 5px;font-size:.74rem;color:var(--accent)"
-          value="${nec}" min="1" data-ok="${ok}" data-sid="${sid}" data-orig="${p.numOfSheet}"
+      </div>`,
+      coliSchedule:`<div class="tdi" onclick="event.stopPropagation()">
+        <input type="number" class="pk-input qty" style="width:54px;text-align:center;padding:3px 5px;font-size:.74rem;color:var(--accent);${dis?'opacity:.5;cursor:not-allowed':''}"
+          value="${nec}" min="1" data-ok="${ok}" data-sid="${sid}" data-orig="${p.numOfSheet}" ${dis?'disabled title="Pornește schimbul pentru a raporta"':''}
           oninput="rapNecInput(this)" onclick="event.stopPropagation()">
         ${nec!==p.numOfSheet?`<span style="font-size:.6rem;color:var(--dim);margin-left:3px">↩${p.numOfSheet}</span>`:''}
-      </div></td>
-    </tr>`;
+      </div>`
+    };
+
+    return `<tr class="data-row">${rapColumns.filter(c=>c.show!==false).map(c=>`<td style="width:${c.width}px;min-width:${c.width}px;max-width:${c.width}px;overflow:hidden">${cells[c.key]||''}</td>`).join('')}<td></td></tr>`;
   }
 
-  const rapHeadRow=`<tr>${th('prio','Prio.')}${th('program','Program')}<th>MO ID</th><th>Schedule No</th><th>Timp Progr.</th><th>Item No</th><th>Dim. Program</th><th>Format Coli Deb.</th><th>Cod Movex</th><th>Cantitate</th><th>Coli Schedule</th></tr>`;
+  const rapHeadRow=`<tr>${rapColumns.filter(c=>c.show!==false).map(c=>`
+    <th style="position:relative;width:${c.width}px;min-width:${c.width}px;max-width:${c.width}px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+        onclick="rapSetSort('${c.key}')" title="${esc(c.label)} (click sortare)">
+      ${esc(c.label)}${si(c.key)}
+      <span class="rap-col-resizer" data-col="${c.key}" onmousedown="rapColResizeStart(event,'${c.key}')"
+        style="position:absolute;right:0;top:0;bottom:0;width:6px;cursor:col-resize;background:transparent" onclick="event.stopPropagation()"></span>
+    </th>`).join('')}
+    <th style="width:34px;text-align:center">
+      <button onclick="event.stopPropagation();openRapColumnsConfig()" title="Configurează coloane"
+        style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.9rem">⚙</button>
+    </th></tr>`;
 
   const realSection=realizedProgs.length?`
     <div class="s-head" style="margin-top:16px">✅ Realizate integral (${realizedProgs.length})</div>
@@ -4534,14 +4574,20 @@ async function openShiftReportsModal(){
         ${(r.vr_events||[]).length?`<span>🐌 Viteză redusă: <strong style="color:#ffb300">${(r.vr_events||[]).length}×</strong></span>`:''}
       </div>
       <div id="rdet-${r.id}" style="display:none;margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
-        ${realCount?`<div style="font-size:.7rem;color:var(--muted);margin-bottom:5px;font-weight:600">📦 Realizări:</div>
-        <div style="overflow-x:auto;margin-bottom:10px"><table style="width:100%;border-collapse:collapse;font-size:.68rem">
-          <thead><tr style="background:var(--surf3)">${['Program','MO ID','Schedule No','Timp Progr.','Item No','Dim. Program','Format Coli','Cod Movex','Cantitate','Coli Sch.'].map(h=>`<th style="padding:4px 6px;text-align:left;color:var(--muted)">${h}</th>`).join('')}</tr></thead>
+        ${realCount?(()=>{
+          const parseMin=s=>{if(!s) return 0;const m=String(s).match(/(?:(\d+)h)?\s*(?:(\d+)min)?/);if(!m) return 0;return(parseInt(m[1])||0)*60+(parseInt(m[2])||0);};
+          const sumProgr=(r.realizations||[]).reduce((s,x)=>s+parseMin(x.timpProgram),0);
+          const sumReal=(r.realizations||[]).reduce((s,x)=>s+parseMin(x.timpRealizat),0);
+          const delta=sumReal-sumProgr;
+          return `<div style="font-size:.72rem;color:var(--muted);margin-bottom:5px;font-weight:700">📦 TABEL 1 — Realizări (${realCount})</div>
+        <div style="overflow-x:auto;margin-bottom:6px"><table style="width:100%;border-collapse:collapse;font-size:.68rem">
+          <thead><tr style="background:var(--surf3)">${['Program','MO ID','Schedule No','Timp Progr.','Timp Realizat','Item No','Dim. Program','Format Coli','Cod Movex','Cantitate','Coli Sch.'].map(h=>`<th style="padding:4px 6px;text-align:left;color:var(--muted)">${h}</th>`).join('')}</tr></thead>
           <tbody>${(r.realizations||[]).map(x=>`<tr style="border-top:1px solid var(--border)">
             <td style="padding:4px 6px;font-family:var(--mono)">${esc(x.programName||x.source||'')}</td>
             <td style="padding:4px 6px">${esc(x.moId||'—')}</td>
             <td style="padding:4px 6px;color:var(--accent)">${esc(x.scheduleNo||'—')}</td>
             <td style="padding:4px 6px;color:var(--info)">${esc(x.timpProgram||'—')}</td>
+            <td style="padding:4px 6px;color:${parseMin(x.timpRealizat)>parseMin(x.timpProgram)?'var(--warn)':'var(--ok)'}">${esc(x.timpRealizat||'—')}</td>
             <td style="padding:4px 6px">${esc(x.itemNo||'—')}</td>
             <td style="padding:4px 6px">${esc(x.dimProgram||'—')}</td>
             <td style="padding:4px 6px">${esc(x.formatColi||'—')}</td>
@@ -4549,8 +4595,19 @@ async function openShiftReportsModal(){
             <td style="padding:4px 6px;text-align:center;color:var(--ok);font-weight:700">${x.coliDebitate}</td>
             <td style="padding:4px 6px;text-align:center">${x.numOfSheet}</td>
           </tr>`).join('')}</tbody>
-        </table></div>`:''}
-        ${evCount?`<div style="font-size:.7rem;color:var(--muted);margin-bottom:5px;font-weight:600">⏸ Stationări:</div>
+          <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
+            <td colspan="3" style="padding:5px 6px;text-align:right;color:var(--muted)">TOTAL:</td>
+            <td style="padding:5px 6px;color:var(--info)">${fmtCutMin(sumProgr)}</td>
+            <td style="padding:5px 6px;color:${delta>0?'var(--warn)':'var(--ok)'}">${fmtCutMin(sumReal)} ${delta!==0?`(${delta>0?'+':''}${fmtCutMin(Math.abs(delta))})`:''}</td>
+            <td colspan="6"></td>
+          </tr></tfoot>
+        </table></div>
+        <div style="font-size:.66rem;color:var(--dim);margin-bottom:10px">
+          Comparație: Timp Progr. (estimat din nest) = <strong style="color:var(--info)">${fmtCutMin(sumProgr)}</strong> vs Timp Realizat (declarat) = <strong style="color:${delta>0?'var(--warn)':'var(--ok)'}">${fmtCutMin(sumReal)}</strong>
+          ${delta!==0?` — diferență <strong>${delta>0?'+':''}${fmtCutMin(Math.abs(delta))}</strong> ${delta>0?'(peste estimare)':'(sub estimare)'}`:' — identic'}
+        </div>`;
+        })():''}
+        ${evCount?`<div style="font-size:.72rem;color:var(--muted);margin-bottom:5px;font-weight:700">⏸ TABEL 2 — Stationări (${evCount})</div>
         <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px">${(r.events||[]).map(e=>`
           <div style="display:flex;gap:10px;align-items:center;font-size:.7rem;background:var(--surf3);border-radius:5px;padding:4px 9px">
             <span>${e.icon||''} ${esc(e.label||e.type)}</span>
@@ -4721,6 +4778,132 @@ function adjustAppFontSize(dir){
 }
 // Aplică imediat la încărcare (înainte de login, ca să fie deja setat)
 applyAppFontSize();
+</script>
+
+
+<script>
+/* ══ SISTEM COLOANE RAPORTARE — resize, ascundere, reordonare, sortare ══ */
+
+// ── Persistență (localStorage + Supabase, ca la labelConfig) ──
+function saveRapColumnsPersist(){
+  try{localStorage.setItem('nv_rap_columns',JSON.stringify(rapColumns));}catch(_){}
+  if(typeof sb!=='undefined'&&sb&&typeof currentUser!=='undefined'&&currentUser){
+    sb.from('app_settings').upsert({key:'rap_columns',value:rapColumns,updated_by:currentUser.id,updated_at:new Date().toISOString()},{onConflict:'key'})
+      .then(({error})=>{if(error) console.warn('[NV] rapColumns save:',error.message);});
+  }
+}
+function loadRapColumnsPersist(){
+  try{
+    const stored=localStorage.getItem('nv_rap_columns');
+    if(stored){
+      const parsed=JSON.parse(stored);
+      if(Array.isArray(parsed)&&parsed.length) rapColumns=parsed;
+    }
+  }catch(_){}
+}
+loadRapColumnsPersist();
+
+// ── Resize coloane prin drag ──
+let _rapResizing=null;
+function rapColResizeStart(e,key){
+  e.preventDefault();e.stopPropagation();
+  const col=rapColumns.find(c=>c.key===key);if(!col) return;
+  _rapResizing={key,startX:e.clientX,startWidth:col.width};
+  document.addEventListener('mousemove',rapColResizeMove);
+  document.addEventListener('mouseup',rapColResizeEnd);
+}
+function rapColResizeMove(e){
+  if(!_rapResizing) return;
+  const col=rapColumns.find(c=>c.key===_rapResizing.key);if(!col) return;
+  const delta=e.clientX-_rapResizing.startX;
+  col.width=Math.max(40,_rapResizing.startWidth+delta);
+  if(typeof renderRaportare==='function') renderRaportare();
+}
+function rapColResizeEnd(){
+  document.removeEventListener('mousemove',rapColResizeMove);
+  document.removeEventListener('mouseup',rapColResizeEnd);
+  _rapResizing=null;
+  saveRapColumnsPersist();
+}
+
+// ── Modal configurare coloane: ascundere/afișare + reordonare ──
+function openRapColumnsConfig(){
+  let modal=document.getElementById('rap-cols-modal');
+  if(!modal){
+    modal=document.createElement('div');
+    modal.id='rap-cols-modal';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:3300;display:flex;align-items:center;justify-content:center;padding:16px';
+    modal.onclick=e=>{if(e.target===modal) modal.style.display='none';};
+    document.body.appendChild(modal);
+  }
+  renderRapColumnsConfigBody(modal);
+  modal.style.display='flex';
+}
+function renderRapColumnsConfigBody(modal){
+  modal.innerHTML=`<div style="background:var(--surf);border:1px solid var(--border);border-radius:var(--r);width:min(480px,94vw);max-height:85vh;overflow-y:auto;padding:16px;box-shadow:var(--sh)">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <h3 style="margin:0;font-size:.9rem;flex:1">⚙ Coloane Raportare</h3>
+      <button class="btn-sm btn-cancel-def" onclick="rapColumnsReset()">↺ Reset</button>
+      <button class="logout-btn" onclick="document.getElementById('rap-cols-modal').style.display='none'">✕</button>
+    </div>
+    <div id="rap-cols-list"></div>
+    <div style="font-size:.68rem;color:var(--dim);margin-top:10px">Trage marginea dreaptă a unei coloane din tabel pentru a-i modifica lățimea.</div>
+  </div>`;
+  renderRapColsList();
+}
+function renderRapColsList(){
+  const list=document.getElementById('rap-cols-list');
+  if(!list) return;
+  list.innerHTML=rapColumns.map((c,i)=>`
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--surf2);border:1px solid var(--border);border-radius:6px;margin-bottom:5px">
+      <div style="display:flex;flex-direction:column;gap:1px">
+        <button onclick="rapColMove(${i},-1)" style="width:20px;height:14px;font-size:.55rem;background:var(--surf3);border:1px solid var(--border2);border-radius:2px;cursor:pointer;color:var(--muted);padding:0">▲</button>
+        <button onclick="rapColMove(${i},1)" style="width:20px;height:14px;font-size:.55rem;background:var(--surf3);border:1px solid var(--border2);border-radius:2px;cursor:pointer;color:var(--muted);padding:0">▼</button>
+      </div>
+      <input type="checkbox" ${c.show!==false?'checked':''} onchange="rapColToggle(${i},this.checked)" style="accent-color:var(--accent);cursor:pointer">
+      <span style="flex:1;font-size:.8rem">${esc(c.label)}</span>
+      <input type="number" value="${c.width}" min="40" max="400" style="width:55px;background:var(--surf3);border:1px solid var(--border2);border-radius:4px;padding:3px 5px;font-size:.72rem;color:var(--text)"
+        onchange="rapColSetWidth(${i},this.value)">
+      <span style="font-size:.65rem;color:var(--dim)">px</span>
+    </div>`).join('');
+}
+function rapColMove(idx,dir){
+  const newIdx=idx+dir;
+  if(newIdx<0||newIdx>=rapColumns.length) return;
+  [rapColumns[idx],rapColumns[newIdx]]=[rapColumns[newIdx],rapColumns[idx]];
+  renderRapColsList();saveRapColumnsPersist();
+  if(typeof renderRaportare==='function') renderRaportare();
+}
+function rapColToggle(idx,val){
+  rapColumns[idx].show=val;
+  saveRapColumnsPersist();
+  if(typeof renderRaportare==='function') renderRaportare();
+}
+function rapColSetWidth(idx,val){
+  rapColumns[idx].width=Math.max(40,parseInt(val)||90);
+  saveRapColumnsPersist();
+  if(typeof renderRaportare==='function') renderRaportare();
+}
+function rapColumnsReset(){
+  if(!confirm('Resetezi coloanele la configurația implicită?')) return;
+  rapColumns=[
+    {key:'prio',label:'Prio.',show:true,width:50},
+    {key:'program',label:'Program',show:true,width:150},
+    {key:'moId',label:'MO ID',show:true,width:100},
+    {key:'schedNo',label:'Schedule No',show:true,width:110},
+    {key:'timpProgr',label:'Timp Progr.',show:true,width:110},
+    {key:'timpRealizat',label:'Timp Realizat',show:true,width:90},
+    {key:'itemNo',label:'Item No',show:true,width:100},
+    {key:'dimProgram',label:'Dim. Program',show:true,width:110},
+    {key:'formatColi',label:'Format Coli Deb.',show:true,width:110},
+    {key:'codMovex',label:'Cod Movex',show:true,width:110},
+    {key:'cantitate',label:'Cantitate',show:true,width:170},
+    {key:'coliSchedule',label:'Coli Schedule',show:true,width:90},
+  ];
+  saveRapColumnsPersist();
+  renderRapColsList();
+  if(typeof renderRaportare==='function') renderRaportare();
+}
 </script>
 </body>
 </html>
