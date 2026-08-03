@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Nest Viewer – Debitare LASER</title>
+<script>
+// Aplică tema salvată ÎNAINTE de randare — evită flash-ul temei greșite
+try{document.documentElement.setAttribute('data-theme',localStorage.getItem('nv_app_theme')||'dark');}catch(_){}
+</script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 :root{
@@ -243,6 +247,35 @@ select option{background:#fff;color:#111;font-weight:500;padding:4px 8px;}
 /* ══ ÎNGROȘARE GLOBALĂ TEXT ══ */
 html.app-bold, html.app-bold *{font-weight:700!important;}
 html.app-bold .mono,html.app-bold [style*="font-family:var(--mono)"]{font-weight:700!important;}
+
+/* ══ TEMA LIGHT — fundal alb, caractere adaptate ══ */
+html[data-theme="light"]{
+  --bg:#f4f5f8;--surf:#ffffff;--surf2:#f0f1f5;--surf3:#e6e8ef;
+  --border:#d4d7e0;--border2:#c0c4d2;
+  --text:#1a1d29;--muted:#5a6178;--dim:#8a90a8;
+  --l3030:#00916e;--bodor:#1a6fd4;--accent:#c07800;
+  --ok:#1a9550;--warn:#d3352f;--info:#5b3fd9;
+  --sh:0 8px 32px rgba(0,0,0,.12);
+}
+html[data-theme="light"] body{background:var(--bg);color:var(--text);}
+/* Carduri, tabele, inputuri — contrast corect pe alb */
+html[data-theme="light"] .card{background:var(--surf);border-color:var(--border);box-shadow:0 1px 4px rgba(0,0,0,.06);}
+html[data-theme="light"] .pk-input,html[data-theme="light"] .sched-inp,html[data-theme="light"] .prio-inp{
+  background:var(--surf2);color:var(--text);border-color:var(--border2);
+}
+html[data-theme="light"] table.rap th,html[data-theme="light"] table.pk th,html[data-theme="light"] table.ns th{
+  background:var(--surf2);color:var(--muted);
+}
+html[data-theme="light"] .stat-panel,html[data-theme="light"] .shift-panel{background:var(--surf);border-color:var(--border);}
+html[data-theme="light"] .app-header{background:var(--surf);border-bottom-color:var(--border);box-shadow:0 1px 3px rgba(0,0,0,.05);}
+html[data-theme="light"] .tab-btn{color:var(--muted);}
+html[data-theme="light"] .tab-btn.active{color:var(--text);}
+html[data-theme="light"] .empty-state{color:var(--dim);}
+html[data-theme="light"] #dropzone-side,html[data-theme="light"] #hdr-drop{background:var(--surf2);border-color:var(--border2);}
+html[data-theme="light"] .auth-box,html[data-theme="light"] .cfg-box{background:var(--surf);}
+html[data-theme="light"] ::-webkit-scrollbar-track{background:var(--surf2);}
+html[data-theme="light"] ::-webkit-scrollbar-thumb{background:var(--border2);}
+/* Select-urile rămân albe/negre în ambele teme (deja fixate anterior) — nicio schimbare necesară */
 .sched-inp{background:var(--surf3);border:1px solid var(--border2);border-radius:5px;
   padding:3px 8px;color:var(--accent);font-size:.72rem;font-family:var(--mono);outline:none;
   width:96px;transition:border-color .15s;letter-spacing:.04em;}
@@ -642,6 +675,12 @@ table.stat-log tr:last-child td{border-bottom:none;}
     </span>
     <button id="btn-bold-toggle" onclick="toggleAppBold()" title="Îngroașă tot textul din aplicație"
       style="background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:4px 10px;color:var(--muted);cursor:pointer;font-size:.78rem;font-weight:800">B</button>
+    <span style="display:flex;align-items:center;gap:2px;background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:2px" title="Temă aplicație">
+      <button id="btn-theme-dark" onclick="setAppTheme('dark')" title="Temă întunecată"
+        style="background:none;border:none;color:var(--muted);cursor:pointer;padding:4px 8px;font-size:.85rem;border-radius:4px">🌙</button>
+      <button id="btn-theme-light" onclick="setAppTheme('light')" title="Temă deschisă (fundal alb)"
+        style="background:none;border:none;color:var(--muted);cursor:pointer;padding:4px 8px;font-size:.85rem;border-radius:4px">☀️</button>
+    </span>
     <button id="btn-fullscreen" onclick="toggleFullscreen()" title="Ecran complet"
       style="background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:4px 9px;color:var(--muted);cursor:pointer;font-size:.85rem">⛶</button>
     <button id="btn-refresh" onclick="manualRefresh()" title="Sincronizează cu serverul"
@@ -4981,6 +5020,28 @@ document.addEventListener('fullscreenchange',()=>{
     }
   },{passive:false});
 })();
+</script>
+
+
+<script>
+/* ══ SELECTOR TEMĂ — Dark / Light ══ */
+let appTheme=localStorage.getItem('nv_app_theme')||'dark';
+
+function applyAppTheme(){
+  document.documentElement.setAttribute('data-theme',appTheme);
+  const darkBtn=document.getElementById('btn-theme-dark');
+  const lightBtn=document.getElementById('btn-theme-light');
+  if(darkBtn) darkBtn.style.background=appTheme==='dark'?'var(--accent)':'none';
+  if(darkBtn) darkBtn.style.color=appTheme==='dark'?'#000':'var(--muted)';
+  if(lightBtn) lightBtn.style.background=appTheme==='light'?'var(--accent)':'none';
+  if(lightBtn) lightBtn.style.color=appTheme==='light'?'#000':'var(--muted)';
+}
+function setAppTheme(t){
+  appTheme=t;
+  localStorage.setItem('nv_app_theme',t);
+  applyAppTheme();
+}
+applyAppTheme();
 </script>
 </body>
 </html>
