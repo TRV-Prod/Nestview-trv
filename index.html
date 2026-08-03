@@ -17,7 +17,8 @@
   --r:10px;--sh:0 8px 32px rgba(0,0,0,.55);
   --mono:'JetBrains Mono','Consolas',monospace;
 }
-body{font-family:-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:60px;}
+html{overscroll-behavior-y:contain;}
+body{font-family:-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:60px;overscroll-behavior-y:contain;overscroll-behavior-x:none;touch-action:pan-x pan-y;}
 /* ── Layout flex row (views + sidebar) ── */
 #app-row{display:flex;align-items:flex-start;align-items:flex-start;}
 #app-views{flex:1;min-width:0;overflow:auto;width:100%;}
@@ -229,6 +230,19 @@ body{font-family:-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:
   .card-rpt{font-size:.72rem;flex-wrap:wrap;}
   .stat-timer-big,.shift-timer-big{font-size:1.4rem!important;}
 }
+
+/* ══ MENIURI LIZIBILE — fundal alb, text negru, peste tot în aplicație ══ */
+select,.rs,.machine-sel,.shift-sel{
+  background:#fff!important;color:#111!important;border:1px solid #999!important;
+  font-weight:500;
+}
+select option{background:#fff;color:#111;font-weight:500;padding:4px 8px;}
+/* Modale (dropdown-uri native ale select-urilor moștenesc automat) */
+.lcfg-box,#sheet-dims-modal>div,#label-cfg-overlay .lcfg-box{background:var(--surf);} /* modale rămân pe tema dark, doar select-urile devin albe pt lizibilitate cross-OS */
+
+/* ══ ÎNGROȘARE GLOBALĂ TEXT ══ */
+html.app-bold, html.app-bold *{font-weight:700!important;}
+html.app-bold .mono,html.app-bold [style*="font-family:var(--mono)"]{font-weight:700!important;}
 .sched-inp{background:var(--surf3);border:1px solid var(--border2);border-radius:5px;
   padding:3px 8px;color:var(--accent);font-size:.72rem;font-family:var(--mono);outline:none;
   width:96px;transition:border-color .15s;letter-spacing:.04em;}
@@ -626,6 +640,10 @@ table.stat-log tr:last-child td{border-bottom:none;}
       <span id="app-font-pct" style="font-size:.65rem;color:var(--dim);min-width:32px;text-align:center">100%</span>
       <button onclick="adjustAppFontSize(1)" style="background:none;border:none;color:var(--muted);cursor:pointer;padding:3px 7px;font-size:.85rem;border-radius:4px">A+</button>
     </span>
+    <button id="btn-bold-toggle" onclick="toggleAppBold()" title="Îngroașă tot textul din aplicație"
+      style="background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:4px 10px;color:var(--muted);cursor:pointer;font-size:.78rem;font-weight:800">B</button>
+    <button id="btn-fullscreen" onclick="toggleFullscreen()" title="Ecran complet"
+      style="background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:4px 9px;color:var(--muted);cursor:pointer;font-size:.85rem">⛶</button>
     <button id="btn-refresh" onclick="manualRefresh()" title="Sincronizează cu serverul"
       style="background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:4px 10px;color:var(--muted);cursor:pointer;font-size:.75rem;transition:all .15s"
       onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--muted)'">⟳ Refresh</button>
@@ -4904,6 +4922,65 @@ function rapColumnsReset(){
   renderRapColsList();
   if(typeof renderRaportare==='function') renderRaportare();
 }
+</script>
+
+
+<script>
+/* ══ ÎNGROȘARE TEXT GLOBALĂ ══ */
+let appBoldOn=localStorage.getItem('nv_app_bold')==='1';
+function applyAppBold(){
+  document.documentElement.classList.toggle('app-bold',appBoldOn);
+  const btn=document.getElementById('btn-bold-toggle');
+  if(btn){
+    btn.style.background=appBoldOn?'var(--accent)':'var(--surf3)';
+    btn.style.color=appBoldOn?'#000':'var(--muted)';
+  }
+}
+function toggleAppBold(){
+  appBoldOn=!appBoldOn;
+  localStorage.setItem('nv_app_bold',appBoldOn?'1':'0');
+  applyAppBold();
+}
+applyAppBold();
+
+/* ══ FULLSCREEN TOGGLE ══ */
+function toggleFullscreen(){
+  const el=document.documentElement;
+  const btn=document.getElementById('btn-fullscreen');
+  if(!document.fullscreenElement){
+    (el.requestFullscreen||el.webkitRequestFullscreen||el.msRequestFullscreen)?.call(el)
+      .then(()=>{if(btn){btn.textContent='⛝';btn.title='Ieși din ecran complet';}})
+      .catch(e=>console.warn('[NV] Fullscreen:',e.message));
+  } else {
+    (document.exitFullscreen||document.webkitExitFullscreen||document.msExitFullscreen)?.call(document)
+      .then(()=>{if(btn){btn.textContent='⛶';btn.title='Ecran complet';}});
+  }
+}
+document.addEventListener('fullscreenchange',()=>{
+  const btn=document.getElementById('btn-fullscreen');
+  if(btn){
+    const isFs=!!document.fullscreenElement;
+    btn.textContent=isFs?'⛝':'⛶';
+    btn.title=isFs?'Ieși din ecran complet':'Ecran complet';
+  }
+});
+
+/* ══ BLOCARE PULL-TO-REFRESH — suport suplimentar touch (peste overscroll-behavior CSS) ══ */
+(function(){
+  let touchStartY=0;
+  document.addEventListener('touchstart',e=>{
+    if(e.touches.length===1) touchStartY=e.touches[0].clientY;
+  },{passive:true});
+  document.addEventListener('touchmove',e=>{
+    if(e.touches.length!==1) return;
+    const touchY=e.touches[0].clientY;
+    const scrollTop=window.scrollY||document.documentElement.scrollTop;
+    // Blochează tragerea în jos DOAR când ești deja în vârful paginii (asta declanșează refresh-ul nativ)
+    if(scrollTop<=0&&touchY>touchStartY){
+      e.preventDefault();
+    }
+  },{passive:false});
+})();
 </script>
 </body>
 </html>
