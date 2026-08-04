@@ -834,9 +834,11 @@ let stockColumns=[
   {key:'AVG',             label:'Preț unitar mediu',    show:true, width:110},
   {key:'STANDARD QTY',    label:'Cantitate în stoc',    show:true, width:110},
   {key:'OBSERVATII',      label:'Observații',           show:true, width:200},
+  {key:'FOTO',            label:'Foto Colet',           show:true, width:110},
 ];
 // Observații pe linie de stoc — PARTAJATE tuturor userilor (nu per-user)
 let stockNotes={}; // stockNoteKey(row) → text
+let stockPhotos={}; // stockNoteKey(row) → {url, takenAt, uploadedBy}
 function stockNoteKey(row){
   return String(row['ITEM NR']||'')+'|||'+String(row['LOTNR']||'')+'|||'+String(row['LOCATION']||'');
 }
@@ -3007,6 +3009,8 @@ async function loadAllData(){
   }catch(_){}
   // Observații partajate Stocuri
   if(typeof loadStockNotes==='function') await loadStockNotes();
+  // Poze colete Stocuri
+  if(typeof loadStockPhotos==='function') await loadStockPhotos();
 
   restoreImagesFromCache();
   refreshStats();updateTabCounts();
@@ -3397,6 +3401,23 @@ function renderStocuri(){
           <input type="text" value="${esc(stockNotes[noteKey]||'')}" placeholder="observație…" data-notekey="${esc(noteKey)}"
             style="width:100%;background:var(--surf2);border:1px solid var(--border2);border-radius:4px;padding:3px 6px;font-size:${fs};color:var(--text);outline:none"
             oninput="stockNoteInput(this)">
+        </td>`;
+      }
+      if(col.key==='FOTO'){
+        const ph=stockPhotos[noteKey];
+        if(ph?.url){
+          const dt=ph.takenAt?new Date(ph.takenAt):null;
+          return `<td style="padding:3px 5px;border-bottom:1px solid rgba(42,47,74,.3);text-align:center">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <img src="${ph.url}" loading="lazy" onclick="openStockPhotoViewer('${esc(noteKey)}')"
+                style="width:44px;height:44px;object-fit:cover;border-radius:5px;border:1px solid var(--border2);cursor:pointer">
+              <span style="font-size:.58rem;color:var(--dim);white-space:nowrap">${dt?dt.toLocaleDateString('ro-RO')+' '+dt.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'}):''}</span>
+            </div>
+          </td>`;
+        }
+        return `<td style="padding:3px 5px;border-bottom:1px solid rgba(42,47,74,.3);text-align:center">
+          <button onclick="triggerStockPhotoUpload('${esc(noteKey)}')" title="Adaugă poză colet"
+            style="background:var(--surf2);border:1px dashed var(--border2);border-radius:5px;width:44px;height:44px;cursor:pointer;color:var(--muted);font-size:1.1rem">📷</button>
         </td>`;
       }
       if(col.key==='TIP') v=parsedTD.tip;
@@ -5289,6 +5310,115 @@ async function loadStockNotes(){
   if(error){console.warn('[NV] loadStockNotes:',error.message);return;}
   stockNotes={};
   (data||[]).forEach(n=>{stockNotes[n.note_key]=n.note_text||'';});
+}
+</script>
+
+
+<script>
+/* ══ FOTO COLET — per LOT NR, cu dată, stocat în Supabase Storage ══ */
+
+function triggerStockPhotoUpload(noteKey){
+  const inp=document.createElement('input');
+  inp.type='file';inp.accept='image/*';inp.capture='environment';
+  inp.onchange=async()=>{
+    if(inp.files[0]) await uploadStockPhoto(noteKey,inp.files[0]);
+  };
+  inp.click();
+}
+
+function compressImageToDataUrl(file,maxDim){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    const url=URL.createObjectURL(file);
+    img.onload=()=>{
+      let{width,height}=img;
+      if(width>maxDim||height>maxDim){
+        const scale=maxDim/Math.max(width,height);
+        width=Math.round(width*scale);height=Math.round(height*scale);
+      }
+      const cvs=document.createElement('canvas');
+      cvs.width=width;cvs.height=height;
+      cvs.getContext('2d').drawImage(img,0,0,width,height);
+      URL.revokeObjectURL(url);
+      resolve(cvs.toDataURL('image/jpeg',.82));
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('Nu s-a putut încărca imaginea'));};
+    img.src=url;
+  });
+}
+
+async function uploadStockPhoto(noteKey,file){
+  if(!sb||!currentUser){showToast('⚠ Fără conexiune Supabase — poza nu se poate salva','err');return;}
+  showToast('Se încarcă poza...','ok',6000);
+  try{
+    const dataUrl=await compressImageToDataUrl(file,1400);
+    const res=await fetch(dataUrl);
+    const blob=await res.blob();
+    const safeName=noteKey.replace(/[^a-zA-Z0-9]/g,'_');
+    const path=`stock/${safeName}/${Date.now()}.jpg`;
+    const{error:upErr}=await sb.storage.from('stock-photos').upload(path,blob,{contentType:'image/jpeg',upsert:false});
+    if(upErr){showToast('⚠ Eroare upload: '+upErr.message,'err',6000);console.warn('[NV] uploadStockPhoto:',upErr);return;}
+    const{data:pub}=sb.storage.from('stock-photos').getPublicUrl(path);
+    const url=pub.publicUrl;
+    const takenAt=new Date().toISOString();
+
+    const{error:dbErr}=await sb.from('stock_photos').upsert({
+      photo_key:noteKey,photo_url:url,taken_at:takenAt,uploaded_by:currentUser.id
+    },{onConflict:'photo_key'});
+    if(dbErr){showToast('⚠ Eroare salvare DB: '+dbErr.message,'err',6000);return;}
+
+    stockPhotos[noteKey]={url,takenAt,uploadedBy:currentUser.id};
+    if(typeof renderStocuri==='function') renderStocuri();
+    showToast('✓ Poză colet salvată');
+  }catch(e){
+    console.error('[NV] uploadStockPhoto:',e);
+    showToast('⚠ Eroare: '+e.message,'err',6000);
+  }
+}
+
+async function loadStockPhotos(){
+  if(!sb) return;
+  const{data,error}=await sb.from('stock_photos').select('*');
+  if(error){console.warn('[NV] loadStockPhotos:',error.message);return;}
+  stockPhotos={};
+  (data||[]).forEach(p=>{stockPhotos[p.photo_key]={url:p.photo_url,takenAt:p.taken_at,uploadedBy:p.uploaded_by};});
+}
+
+function openStockPhotoViewer(noteKey){
+  const ph=stockPhotos[noteKey];if(!ph) return;
+  let modal=document.getElementById('stock-photo-viewer');
+  if(!modal){
+    modal=document.createElement('div');
+    modal.id='stock-photo-viewer';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:3600;display:flex;align-items:center;justify-content:center;padding:16px';
+    modal.onclick=e=>{if(e.target===modal) modal.style.display='none';};
+    document.body.appendChild(modal);
+  }
+  const dt=ph.takenAt?new Date(ph.takenAt):null;
+  const isDev=typeof canManageUsers==='function'&&canManageUsers();
+  modal.innerHTML=`<div style="max-width:92vw;max-height:90vh;display:flex;flex-direction:column;gap:10px;align-items:center">
+    <img src="${ph.url}" style="max-width:100%;max-height:75vh;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.5)">
+    <div style="display:flex;align-items:center;gap:14px;background:rgba(255,255,255,.08);border-radius:8px;padding:8px 16px">
+      <span style="color:#fff;font-size:.82rem">📅 ${dt?dt.toLocaleDateString('ro-RO')+' '+dt.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'}):'—'}</span>
+      <button onclick="triggerStockPhotoUpload('${esc(noteKey)}');document.getElementById('stock-photo-viewer').style.display='none'"
+        style="background:var(--accent);border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:.78rem;font-weight:700">🔄 Reia poza</button>
+      ${isDev?`<button onclick="deleteStockPhoto('${esc(noteKey)}')" style="background:rgba(239,83,80,.2);border:1px solid rgba(239,83,80,.5);color:#ff6b6b;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:.78rem">🗑 Șterge</button>`:''}
+      <button onclick="document.getElementById('stock-photo-viewer').style.display='none'"
+        style="background:rgba(255,255,255,.1);border:none;color:#fff;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:.78rem">✕ Închide</button>
+    </div>
+  </div>`;
+  modal.style.display='flex';
+}
+
+async function deleteStockPhoto(noteKey){
+  if(!confirm('Ștergi poza acestui colet?')) return;
+  if(sb){
+    await sb.from('stock_photos').delete().eq('photo_key',noteKey);
+  }
+  delete stockPhotos[noteKey];
+  document.getElementById('stock-photo-viewer').style.display='none';
+  if(typeof renderStocuri==='function') renderStocuri();
+  showToast('✓ Poză ștearsă');
 }
 </script>
 </body>
