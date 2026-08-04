@@ -822,6 +822,25 @@ let rapColumns=[
   {key:'coliSchedule',label:'Coli Schedule',    show:true, width:90},
 ];
 
+// ── Coloane Stocuri — configurabile (ordine, vizibilitate, lățime) ──
+let stockColumns=[
+  {key:'ITEM NR',        label:'Item Nr',              show:true, width:110},
+  {key:'TIP',             label:'Tip',                  show:true, width:170},
+  {key:'DIMENSIUNI',      label:'Dimensiuni',           show:true, width:130},
+  {key:'ITEM DESCRIPTION',label:'Item Description',     show:true, width:220},
+  {key:'LOTNR',           label:'Lot Nr',               show:true, width:100},
+  {key:'LOT REF 1',       label:'Lot Ref 1',            show:true, width:110},
+  {key:'LOCATION',        label:'Locație',              show:true, width:90},
+  {key:'AVG',             label:'Preț unitar mediu',    show:true, width:110},
+  {key:'STANDARD QTY',    label:'Cantitate în stoc',    show:true, width:110},
+  {key:'OBSERVATII',      label:'Observații',           show:true, width:200},
+];
+// Observații pe linie de stoc — PARTAJATE tuturor userilor (nu per-user)
+let stockNotes={}; // stockNoteKey(row) → text
+function stockNoteKey(row){
+  return String(row['ITEM NR']||'')+'|||'+String(row['LOTNR']||'')+'|||'+String(row['LOCATION']||'');
+}
+
 // ── Variabile Schimb ──
 let shiftState={active:false,machine:'',shiftLabel:'',loginTime:null,events:[],timerRef:null,completedRealizations:[],debBaseline:{}};
 let shiftMachine=''; // mașina selectată pentru schimb + Realizări (unificat)
@@ -2464,31 +2483,14 @@ function ocCancel(){
 /* ══ FUNCȚII STOCURI — globale, accesibile din onclick HTML ══ */
 
 
-// Extrage format tablă (Grosime x Lățime x Lungime) dintr-un string oarecare
-function extractSheetFormat(str){
-  if(!str) return null;
-  const s=String(str).trim();
-  const m=s.match(/(\d+[.,]?\d*)\s*[xX×]\s*(\d+[.,]?\d*)\s*[xX×]\s*(\d+[.,]?\d*)/);
-  if(!m) return null;
-  // Input: Grosime x Lățime x Lungime → Afișare: Lungime × Lățime × Grosime (ca în Nesturi)
-  const grosime=m[1].replace(',','.'),latime=m[2].replace(',','.'),lungime=m[3].replace(',','.');
-  return{match:m[0],matchIndex:m.index,dim:lungime+' × '+latime+' × '+grosime+' mm'};
-}
-
-function parseItemName(name,description){
-  const nameStr=name?String(name).trim():'';
-  // 1. Caută formatul întâi în ITEM NAME (la finalul stringului, cum era tratat original)
-  const mName=nameStr.match(/\s+(\d+[.,]?\d*)\s*[xX×]\s*(\d+[.,]?\d*)\s*[xX×]\s*(\d+[.,]?\d*)\s*$/);
-  if(mName){
-    const tip=nameStr.slice(0,mName.index).trim();
-    const grosime=mName[1].replace(',','.'),latime=mName[2].replace(',','.'),lungime=mName[3].replace(',','.');
-    return{tip,dim:lungime+' × '+latime+' × '+grosime+' mm'};
-  }
-  // 2. Fallback: caută formatul (Grosime x Lățime x Lungime) în ITEM DESCRIPTION
-  const found=extractSheetFormat(description);
-  if(found) return{tip:nameStr,dim:found.dim};
-  // 3. Nimic găsit
-  return{tip:nameStr,dim:''};
+// TIP + DIMENSIUNI = split ITEM NAME după ULTIMUL spațiu din string
+// Exemplu: "SHEET ALMG3 1,50x1500x3000" → TIP="SHEET ALMG3", DIMENSIUNI="1,50x1500x3000"
+function parseItemName(name){
+  const s=name?String(name).trim():'';
+  if(!s) return{tip:'',dim:''};
+  const lastSpace=s.lastIndexOf(' ');
+  if(lastSpace<0) return{tip:s,dim:''};
+  return{tip:s.slice(0,lastSpace).trim(),dim:s.slice(lastSpace+1).trim()};
 }
 
 function stockSortBy(col){
@@ -2980,6 +2982,16 @@ async function loadAllData(){
       localStorage.setItem('nv_rap_columns',JSON.stringify(rapColumns));
     }
   }catch(_){}
+  // Config coloane Stocuri din Supabase
+  try{
+    const{data:sc}=await sb.from('app_settings').select('value').eq('key','stock_columns').maybeSingle();
+    if(sc?.value&&Array.isArray(sc.value)&&sc.value.length){
+      stockColumns=sc.value;
+      localStorage.setItem('nv_stock_columns',JSON.stringify(stockColumns));
+    }
+  }catch(_){}
+  // Observații partajate Stocuri
+  if(typeof loadStockNotes==='function') await loadStockNotes();
 
   restoreImagesFromCache();
   refreshStats();updateTabCounts();
@@ -3247,6 +3259,22 @@ async function importStockFile(file){
     return;
   }
 
+  // ── Păstrează DOAR coloanele cerute din fișier (restul se ignoră) ──
+  const WANTED_COLS=['ITEM NR','ITEM NAME','ITEM DESCRIPTION','LOTNR','LOT REF 1','LOCATION','AVG','STANDARD QTY'];
+  // Mapare case-insensitive: găsește numele EXACT din fișier pentru fiecare coloană dorită
+  const colMap={};
+  WANTED_COLS.forEach(wanted=>{
+    const found=headers.find(h=>h.trim().toUpperCase()===wanted.toUpperCase());
+    if(found) colMap[wanted]=found;
+  });
+  console.log('[NV] Coloane mapate:',colMap);
+  rows=rows.map(r=>{
+    const nr={};
+    WANTED_COLS.forEach(wanted=>{nr[wanted]=colMap[wanted]?(r[colMap[wanted]]||''):'';});
+    return nr;
+  });
+  headers=WANTED_COLS.slice();
+
   const activeCodes=new Set((stockLocations||[]).filter(l=>l.active).map(l=>l.code.toUpperCase()));
   console.log('[NV] Active location codes:', [...activeCodes]);
 
@@ -3289,93 +3317,96 @@ async function importStockFile(file){
 function renderStocuri(){
   const el=document.getElementById('stocuri-main');
   if(!el) return;
-  // Înlocuiește ITEM NAME cu TIP + DIMENSIUNI
-  const baseHeaders=stockHeaders.length?stockHeaders:['ITEM NR','ITEM NAME','LOCATION','LOTNR','STANDARD QTY','STANDARD U/M'];
-  const displayHeaders=baseHeaders.reduce((acc,h)=>{
-    if(h==='ITEM NAME') return [...acc,'TIP','DIMENSIUNI'];
-    return [...acc,h];
-  },[]);
 
   // Apply filters
   let rows=stockRecords.map(r=>r.data||r);
   Object.entries(stockFilters).forEach(([col,fval])=>{
-    rows=rows.filter(r=>String(r[col]||'').toLowerCase().includes(fval));
+    rows=rows.filter(r=>{
+      if(col==='TIP') return parseItemName(r['ITEM NAME']).tip.toLowerCase().includes(fval);
+      if(col==='DIMENSIUNI') return parseItemName(r['ITEM NAME']).dim.toLowerCase().includes(fval);
+      if(col==='OBSERVATII') return (stockNotes[stockNoteKey(r)]||'').toLowerCase().includes(fval);
+      return String(r[col]||'').toLowerCase().includes(fval);
+    });
   });
   // Apply sort
   if(stockSort.col){
     const col=stockSort.col;const asc=stockSort.asc;
     rows=[...rows].sort((a,b)=>{
-      const av=String(a[col]||''),bv=String(b[col]||'');
+      const gv=(r)=>{
+        if(col==='TIP') return parseItemName(r['ITEM NAME']).tip;
+        if(col==='DIMENSIUNI') return parseItemName(r['ITEM NAME']).dim;
+        if(col==='OBSERVATII') return stockNotes[stockNoteKey(r)]||'';
+        return r[col];
+      };
+      const av=String(gv(a)||''),bv=String(gv(b)||'');
       const an=parseFloat(av),bn=parseFloat(bv);
       if(!isNaN(an)&&!isNaN(bn)) return asc?an-bn:bn-an;
       return asc?av.localeCompare(bv):bv.localeCompare(av);
     });
   }
 
-  // Location tags
-  const locTags=(stockLocations||[]).map(l=>`
-    <span class="stock-loc-tag">
-      <span class="dtb dt-l" style="font-size:.66rem;padding:1px 6px">${esc(l.code)}</span>
-      ${canImportNests()?`<button onclick="removeStockLocation('${esc(l.code)}')" title="Șterge">×</button>`:''}
-    </span>`).join('');
   const byLoc={};
   stockRecords.forEach(r=>{const d=r.data||r;const loc=String(d['LOCATION']||'').trim();if(!byLoc[loc]) byLoc[loc]=[];byLoc[loc].push(d);});
   const locSummary=Object.entries(byLoc).sort((a,b)=>a[0].localeCompare(b[0])).map(([loc,items])=>
     `<span class="stock-loc-tag"><span class="dtb dt-l" style="font-size:.66rem">${esc(loc)}</span><span style="font-size:.66rem;color:var(--accent);font-weight:700;margin-left:4px">${items.length}</span></span>`).join('');
 
-  // Table: add Label column + sort/filter headers
+  const fs=stockFontSize+'px';
+  const visCols=stockColumns.filter(c=>c.show!==false);
+
   const thSt=`background:var(--surf2);padding:0;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;position:sticky;top:0;z-index:2;`;
   const thInner=(col)=>{
-    const si=stockSort.col===col?(stockSort.asc?'▲':'▼'):'⇅';
-    const fval=stockFilters[col]||'';
-    return `<div style="display:flex;flex-direction:column;min-width:80px">
-      <div style="display:flex;align-items:center;gap:4px;padding:5px 7px;cursor:pointer;font-size:.6rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);white-space:nowrap" onclick="stockSortBy('${esc(col)}')">
-        <span>${esc(col)}</span><span style="color:var(--dim)">${si}</span>
+    const si=stockSort.col===col.key?(stockSort.asc?'▲':'▼'):'⇅';
+    const fval=stockFilters[col.key]||'';
+    return `<div style="display:flex;flex-direction:column;width:${col.width}px;min-width:${col.width}px;max-width:${col.width}px;position:relative">
+      <div style="display:flex;align-items:center;gap:4px;padding:5px 7px;cursor:pointer;font-size:.6rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" onclick="stockSortBy('${esc(col.key)}')" title="${esc(col.label)}">
+        <span>${esc(col.label)}</span><span style="color:var(--dim)">${si}</span>
       </div>
       <div style="padding:0 4px 4px">
-        <input type="text" value="${esc(fval)}" data-filter-col="${esc(col)}" placeholder="Filtrează…" style="width:100%;background:var(--surf3);border:1px solid var(--border);border-radius:4px;padding:2px 5px;font-size:.65rem;color:var(--text);outline:none"
-          oninput="stockFilterChange('${esc(col)}',this.value)">
+        <input type="text" value="${esc(fval)}" data-filter-col="stock:${esc(col.key)}" placeholder="Filtrează…" style="width:100%;background:var(--surf3);border:1px solid var(--border);border-radius:4px;padding:2px 5px;font-size:.65rem;color:var(--text);outline:none"
+          oninput="stockFilterChange('${esc(col.key)}',this.value)">
       </div>
+      <span onmousedown="stockColResizeStart(event,'${esc(col.key)}')" style="position:absolute;right:0;top:0;bottom:0;width:6px;cursor:col-resize"></span>
     </div>`;
   };
-  const tableHeaders=`<th style="${thSt}min-width:70px"><div style="padding:5px 7px;font-size:.6rem;text-transform:uppercase;color:var(--muted)">Etichetă</div></th>`
-    +displayHeaders.map(h=>`<th style="${thSt}">${thInner(h)}</th>`).join('');
+  const tableHeaders=`<th style="${thSt}min-width:60px"><div style="padding:5px 7px;font-size:.6rem;text-transform:uppercase;color:var(--muted)">Etichetă</div></th>`
+    +visCols.map(col=>`<th style="${thSt}">${thInner(col)}</th>`).join('')
+    +`<th style="${thSt}width:32px;text-align:center"><button onclick="openStockColumnsConfig()" title="Configurează coloane" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.85rem;padding:5px">⚙</button></th>`;
 
-  const fs=stockFontSize+'px';
   const recRows=rows.slice(0,2000).map(row=>{
-    // Extrage TIP + DIMENSIUNI o singură dată per rând (căutare în ITEM NAME, apoi fallback ITEM DESCRIPTION)
-    const parsedTD=parseItemName(row['ITEM NAME'],row['ITEM DESCRIPTION']);
-    const cells=displayHeaders.map(h=>{
-      let v;
-      let s=`padding:4px 7px;font-size:${fs};border-bottom:1px solid rgba(42,47,74,.3);`;
-      if(h==='TIP'){
-        v=parsedTD.tip;
-      } else if(h==='DIMENSIUNI'){
-        v=parsedTD.dim;
-        s+='font-family:var(--mono);color:var(--accent);font-weight:600;white-space:nowrap;';
-      } else {
-        v=String(row[h]??'').trim();
-        if(h==='LOCATION') s+='font-weight:700;color:var(--accent);font-family:var(--mono);';
-        if(h==='ITEM NR') s+='font-family:var(--mono);font-size:calc(${fs} - 1px);';
-        if(h==='STANDARD QTY') s+='text-align:right;font-weight:600;color:var(--ok);';
-        if(h==='AVG'&&v&&!isNaN(v)) v=parseFloat(v).toFixed(2);
+    const parsedTD=parseItemName(row['ITEM NAME']);
+    const noteKey=stockNoteKey(row);
+    const cells=visCols.map(col=>{
+      let v,s=`padding:4px 7px;font-size:${fs};border-bottom:1px solid rgba(42,47,74,.3);width:${col.width}px;min-width:${col.width}px;max-width:${col.width}px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
+      if(col.key==='OBSERVATII'){
+        return `<td style="padding:2px 4px;border-bottom:1px solid rgba(42,47,74,.3)">
+          <input type="text" value="${esc(stockNotes[noteKey]||'')}" placeholder="observație…" data-notekey="${esc(noteKey)}"
+            style="width:100%;background:var(--surf2);border:1px solid var(--border2);border-radius:4px;padding:3px 6px;font-size:${fs};color:var(--text);outline:none"
+            oninput="stockNoteInput(this)">
+        </td>`;
       }
-      return `<td style="${s}">${esc(v||'')}</td>`;
+      if(col.key==='TIP') v=parsedTD.tip;
+      else if(col.key==='DIMENSIUNI'){v=parsedTD.dim;s+='font-family:var(--mono);color:var(--accent);font-weight:600;';}
+      else{
+        v=String(row[col.key]??'').trim();
+        if(col.key==='LOCATION') s+='font-weight:700;color:var(--accent);font-family:var(--mono);';
+        if(col.key==='ITEM NR') s+='font-family:var(--mono);';
+        if(col.key==='STANDARD QTY'){s+='text-align:right;font-weight:600;color:var(--ok);';}
+        if(col.key==='AVG'&&v&&!isNaN(v)){v=parseFloat(v).toFixed(2);s+='text-align:right;color:var(--info);';}
+      }
+      return `<td style="${s}" title="${esc(v||'')}">${esc(v||'')}</td>`;
     }).join('');
     const labelBtn=`<td style="padding:3px 5px;border-bottom:1px solid rgba(42,47,74,.3);text-align:center">
       <button onclick='printLabel(${JSON.stringify(row)})' title="Printează etichetă"
         style="background:var(--surf2);border:1px solid var(--border);border-radius:4px;padding:2px 6px;cursor:pointer;font-size:.7rem;color:var(--muted)">🏷</button>
     </td>`;
-    return `<tr>${labelBtn}${cells}</tr>`;
+    return `<tr>${labelBtn}${cells}<td></td></tr>`;
   }).join('');
 
   el.innerHTML=`
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-      <div class="stock-loc-list" style="margin:0">${locTags}</div>
-      ${canImportNests()?`<div style="display:flex;gap:6px">
-        <input class="pk-input code" id="new-loc-inp" placeholder="Cod locație nou" style="width:130px" onkeydown="if(event.key==='Enter') addStockLocation()">
-        <button class="btn-sm btn-start-def" onclick="addStockLocation()">+</button>
-      </div>`:''}
+      <button onclick="openLocationsModal()" style="display:flex;align-items:center;gap:6px;background:var(--surf2);border:1px solid var(--border2);border-radius:8px;padding:7px 14px;cursor:pointer;color:var(--text);font-size:.8rem">
+        📍 Locații <span style="background:var(--accent);color:#000;border-radius:9px;padding:1px 8px;font-size:.7rem;font-weight:700">${(stockLocations||[]).length}</span>
+      </button>
     </div>
     ${stockRecords.length?`
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
@@ -3390,17 +3421,14 @@ function renderStocuri(){
         ${canManageUsers()?`<button class="btn-sm btn-cancel-def" onclick="showLabelConfig()">⚙ Etichetă</button>`:''}
       </div>
       <div style="overflow:auto;border-radius:var(--r);border:1px solid var(--border);max-height:calc(100vh - 280px)">
-        <table style="border-collapse:collapse;width:100%;font-size:${fs};margin:0 auto">
+        <table style="border-collapse:collapse;width:100%;font-size:${fs}">
           <thead><tr>${tableHeaders}</tr></thead>
-          <tbody>${recRows||'<tr><td colspan="'+(displayHeaders.length+1)+'" style="padding:12px;text-align:center;color:var(--dim)">Niciun rezultat pentru filtrele aplicate.</td></tr>'}</tbody>
+          <tbody>${recRows||'<tr><td colspan="'+(visCols.length+2)+'" style="padding:12px;text-align:center;color:var(--dim)">Niciun rezultat pentru filtrele aplicate.</td></tr>'}</tbody>
         </table>
       </div>
       ${rows.length>2000?`<div style="padding:6px;font-size:.72rem;color:var(--muted);text-align:center">Afișate primele 2000 din ${rows.length}.</div>`:''}
     `:'<div class="empty-state" style="padding:24px"><div class="et">Importă un fișier Excel (.xlsx) sau CSV.</div></div>'}`;
 }
-
-
-/* ── USER MANAGEMENT ── */
 async function renderUtilizatori(){
   const el=document.getElementById('utilizatori-main');
   if(!canManageUsers()){el.innerHTML='<div class="empty-state"><div class="ei">🔒</div><div class="et">Acces restricționat.</div></div>';return;}
@@ -5067,6 +5095,186 @@ function setAppTheme(t){
   applyAppTheme();
 }
 applyAppTheme();
+</script>
+
+
+<script>
+/* ══ SISTEM COLOANE STOCURI — resize, ascundere, reordonare ══ */
+function saveStockColumnsPersist(){
+  try{localStorage.setItem('nv_stock_columns',JSON.stringify(stockColumns));}catch(_){}
+  if(typeof sb!=='undefined'&&sb&&typeof currentUser!=='undefined'&&currentUser){
+    sb.from('app_settings').upsert({key:'stock_columns',value:stockColumns,updated_by:currentUser.id,updated_at:new Date().toISOString()},{onConflict:'key'})
+      .then(({error})=>{if(error) console.warn('[NV] stockColumns save:',error.message);});
+  }
+}
+function loadStockColumnsPersist(){
+  try{
+    const stored=localStorage.getItem('nv_stock_columns');
+    if(stored){const parsed=JSON.parse(stored);if(Array.isArray(parsed)&&parsed.length) stockColumns=parsed;}
+  }catch(_){}
+}
+loadStockColumnsPersist();
+
+let _stockResizing=null;
+function stockColResizeStart(e,key){
+  e.preventDefault();e.stopPropagation();
+  const col=stockColumns.find(c=>c.key===key);if(!col) return;
+  _stockResizing={key,startX:e.clientX,startWidth:col.width};
+  document.addEventListener('mousemove',stockColResizeMove);
+  document.addEventListener('mouseup',stockColResizeEnd);
+}
+function stockColResizeMove(e){
+  if(!_stockResizing) return;
+  const col=stockColumns.find(c=>c.key===_stockResizing.key);if(!col) return;
+  col.width=Math.max(50,_stockResizing.startWidth+(e.clientX-_stockResizing.startX));
+  if(typeof renderStocuri==='function') renderStocuri();
+}
+function stockColResizeEnd(){
+  document.removeEventListener('mousemove',stockColResizeMove);
+  document.removeEventListener('mouseup',stockColResizeEnd);
+  _stockResizing=null;
+  saveStockColumnsPersist();
+}
+
+function openStockColumnsConfig(){
+  let modal=document.getElementById('stock-cols-modal');
+  if(!modal){
+    modal=document.createElement('div');
+    modal.id='stock-cols-modal';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:3300;display:flex;align-items:center;justify-content:center;padding:16px';
+    modal.onclick=e=>{if(e.target===modal) modal.style.display='none';};
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML=`<div style="background:var(--surf);border:1px solid var(--border);border-radius:var(--r);width:min(480px,94vw);max-height:85vh;overflow-y:auto;padding:16px;box-shadow:var(--sh)">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <h3 style="margin:0;font-size:.9rem;flex:1">⚙ Coloane Stocuri</h3>
+      <button class="btn-sm btn-cancel-def" onclick="stockColumnsReset()">↺ Reset</button>
+      <button class="logout-btn" onclick="document.getElementById('stock-cols-modal').style.display='none'">✕</button>
+    </div>
+    <div id="stock-cols-list"></div>
+    <div style="font-size:.68rem;color:var(--dim);margin-top:10px">Trage marginea dreaptă a unei coloane din tabel pentru a-i modifica lățimea.</div>
+  </div>`;
+  modal.style.display='flex';
+  renderStockColsList();
+}
+function renderStockColsList(){
+  const list=document.getElementById('stock-cols-list');
+  if(!list) return;
+  list.innerHTML=stockColumns.map((c,i)=>`
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--surf2);border:1px solid var(--border);border-radius:6px;margin-bottom:5px">
+      <div style="display:flex;flex-direction:column;gap:1px">
+        <button onclick="stockColMove(${i},-1)" style="width:20px;height:14px;font-size:.55rem;background:var(--surf3);border:1px solid var(--border2);border-radius:2px;cursor:pointer;color:var(--muted);padding:0">▲</button>
+        <button onclick="stockColMove(${i},1)" style="width:20px;height:14px;font-size:.55rem;background:var(--surf3);border:1px solid var(--border2);border-radius:2px;cursor:pointer;color:var(--muted);padding:0">▼</button>
+      </div>
+      <input type="checkbox" ${c.show!==false?'checked':''} onchange="stockColToggle(${i},this.checked)" style="accent-color:var(--accent);cursor:pointer">
+      <span style="flex:1;font-size:.8rem">${esc(c.label)}</span>
+      <input type="number" value="${c.width}" min="50" max="400" style="width:55px;background:var(--surf3);border:1px solid var(--border2);border-radius:4px;padding:3px 5px;font-size:.72rem;color:var(--text)"
+        onchange="stockColSetWidth(${i},this.value)">
+      <span style="font-size:.65rem;color:var(--dim)">px</span>
+    </div>`).join('');
+}
+function stockColMove(idx,dir){
+  const ni=idx+dir;if(ni<0||ni>=stockColumns.length) return;
+  [stockColumns[idx],stockColumns[ni]]=[stockColumns[ni],stockColumns[idx]];
+  renderStockColsList();saveStockColumnsPersist();
+  if(typeof renderStocuri==='function') renderStocuri();
+}
+function stockColToggle(idx,val){
+  stockColumns[idx].show=val;saveStockColumnsPersist();
+  if(typeof renderStocuri==='function') renderStocuri();
+}
+function stockColSetWidth(idx,val){
+  stockColumns[idx].width=Math.max(50,parseInt(val)||100);saveStockColumnsPersist();
+  if(typeof renderStocuri==='function') renderStocuri();
+}
+function stockColumnsReset(){
+  if(!confirm('Resetezi coloanele Stocuri la configurația implicită?')) return;
+  stockColumns=[
+    {key:'ITEM NR',label:'Item Nr',show:true,width:110},
+    {key:'TIP',label:'Tip',show:true,width:170},
+    {key:'DIMENSIUNI',label:'Dimensiuni',show:true,width:130},
+    {key:'ITEM DESCRIPTION',label:'Item Description',show:true,width:220},
+    {key:'LOTNR',label:'Lot Nr',show:true,width:100},
+    {key:'LOT REF 1',label:'Lot Ref 1',show:true,width:110},
+    {key:'LOCATION',label:'Locație',show:true,width:90},
+    {key:'AVG',label:'Preț unitar mediu',show:true,width:110},
+    {key:'STANDARD QTY',label:'Cantitate în stoc',show:true,width:110},
+    {key:'OBSERVATII',label:'Observații',show:true,width:200},
+  ];
+  saveStockColumnsPersist();renderStockColsList();
+  if(typeof renderStocuri==='function') renderStocuri();
+}
+
+/* ══ MODAL LOCAȚII — buton, listă + adăugare ══ */
+function openLocationsModal(){
+  let modal=document.getElementById('locations-modal');
+  if(!modal){
+    modal=document.createElement('div');
+    modal.id='locations-modal';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:3300;display:flex;align-items:center;justify-content:center;padding:16px';
+    modal.onclick=e=>{if(e.target===modal) modal.style.display='none';};
+    document.body.appendChild(modal);
+  }
+  renderLocationsModalBody(modal);
+  modal.style.display='flex';
+}
+function renderLocationsModalBody(modal){
+  const locTags=(stockLocations||[]).map(l=>`
+    <span class="stock-loc-tag">
+      <span class="dtb dt-l" style="font-size:.72rem;padding:3px 10px">${esc(l.code)}</span>
+      ${typeof canImportNests==='function'&&canImportNests()?`<button onclick="removeStockLocation('${esc(l.code)}');openLocationsModal()" title="Șterge" style="margin-left:4px">×</button>`:''}
+    </span>`).join('');
+  modal.innerHTML=`<div style="background:var(--surf);border:1px solid var(--border);border-radius:var(--r);width:min(440px,94vw);padding:16px;box-shadow:var(--sh)">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <h3 style="margin:0;font-size:.9rem;flex:1">📍 Locații Stoc (${(stockLocations||[]).length})</h3>
+      <button class="logout-btn" onclick="document.getElementById('locations-modal').style.display='none'">✕</button>
+    </div>
+    <div class="stock-loc-list" style="margin-bottom:12px">${locTags||'<span style="color:var(--dim);font-size:.78rem">Nicio locație configurată.</span>'}</div>
+    ${typeof canImportNests==='function'&&canImportNests()?`<div style="display:flex;gap:6px;border-top:1px solid var(--border);padding-top:12px">
+      <input class="pk-input code" id="new-loc-inp-modal" placeholder="Cod locație nou (ex: H8000)" style="flex:1" onkeydown="if(event.key==='Enter') addStockLocationModal()">
+      <button class="auth-btn" style="max-width:90px;padding:8px 14px" onclick="addStockLocationModal()">+ Adaugă</button>
+    </div>`:''}
+  </div>`;
+}
+async function addStockLocationModal(){
+  const inp=document.getElementById('new-loc-inp-modal');
+  const code=inp.value.trim().toUpperCase();if(!code) return;
+  if(typeof sb!=='undefined'&&sb){
+    await sb.from('stock_locations').insert({code,active:true,sort_order:stockLocations.length});
+  } else {
+    stockLocations.push({code,active:true});
+  }
+  inp.value='';
+  renderLocationsModalBody(document.getElementById('locations-modal'));
+  if(typeof renderStocuri==='function') renderStocuri();
+}
+
+/* ══ OBSERVAȚII PARTAJATE — per linie de stoc, vizibile tuturor userilor ══ */
+let _stockNoteTimer={};
+function stockNoteInput(el){
+  const key=el.dataset.notekey;
+  stockNotes[key]=el.value;
+  clearTimeout(_stockNoteTimer[key]);
+  _stockNoteTimer[key]=setTimeout(()=>saveStockNote(key),700);
+}
+async function saveStockNote(key){
+  if(typeof sb==='undefined'||!sb||!currentUser) return;
+  const note=stockNotes[key]||'';
+  if(!note.trim()){
+    await sb.from('stock_notes').delete().eq('note_key',key);
+    return;
+  }
+  await sb.from('stock_notes').upsert({
+    note_key:key,note_text:note,updated_by:currentUser.id,updated_at:new Date().toISOString()
+  },{onConflict:'note_key'});
+}
+async function loadStockNotes(){
+  if(typeof sb==='undefined'||!sb) return;
+  const{data,error}=await sb.from('stock_notes').select('*');
+  if(error){console.warn('[NV] loadStockNotes:',error.message);return;}
+  stockNotes={};
+  (data||[]).forEach(n=>{stockNotes[n.note_key]=n.note_text||'';});
+}
 </script>
 </body>
 </html>
