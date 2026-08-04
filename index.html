@@ -2483,11 +2483,26 @@ function ocCancel(){
 /* ══ FUNCȚII STOCURI — globale, accesibile din onclick HTML ══ */
 
 
-// TIP + DIMENSIUNI = split ITEM NAME după ULTIMUL spațiu din string
-// Exemplu: "SHEET ALMG3 1,50x1500x3000" → TIP="SHEET ALMG3", DIMENSIUNI="1,50x1500x3000"
+// TIP + DIMENSIUNI:
+// 1. Caută un pattern de dimensiuni (NxNxN, cu . sau , zecimale) ORIUNDE în string —
+//    inclusiv lipit de text (ex: "ZM1,5X1500X3000") sau cu sufix după (ex: "6X1500X3000 CR")
+//    → DIMENSIUNI = exact acel pattern; TIP = restul textului (înainte + după, unite)
+// 2. Dacă nu găsește niciun pattern → fallback: split după ultimul spațiu
+// Exemple:
+//   "SHEET HX380LAD+ZM1,5X1500X3000"   → TIP: "SHEET HX380LAD+ZM"  DIM: "1,5X1500X3000"
+//   "SHEET SST304L 6X1500X3000 CR"     → TIP: "SHEET SST304L CR"   DIM: "6X1500X3000"
+//   "SHEET DC01 1,00X1250X2500 P"      → TIP: "SHEET DC01 P"       DIM: "1,00X1250X2500"
 function parseItemName(name){
   const s=name?String(name).trim():'';
   if(!s) return{tip:'',dim:''};
+  const m=s.match(/(\d+[.,]?\d*)[xX×](\d+[.,]?\d*)[xX×](\d+[.,]?\d*)/);
+  if(m){
+    const before=s.slice(0,m.index).trim();
+    const after=s.slice(m.index+m[0].length).trim();
+    const tip=(before+' '+after).trim().replace(/\s+/g,' ');
+    return{tip,dim:m[0]};
+  }
+  // Fallback: ultimul spațiu (pentru articole fără pattern de dimensiuni, ex. rulmenți)
   const lastSpace=s.lastIndexOf(' ');
   if(lastSpace<0) return{tip:s,dim:''};
   return{tip:s.slice(0,lastSpace).trim(),dim:s.slice(lastSpace+1).trim()};
