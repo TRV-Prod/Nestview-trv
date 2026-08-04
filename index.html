@@ -2464,16 +2464,31 @@ function ocCancel(){
 /* ══ FUNCȚII STOCURI — globale, accesibile din onclick HTML ══ */
 
 
-function parseItemName(name){
-  if(!name) return{tip:'',dim:''};
-  const s=String(name).trim();
-  // Dimensiuni la finalul stringului: ex "4X1000X2000" sau "1.5x1000x2000"
-  const m=s.match(/\s+(\d+[.,]?\d*)\s*[xX×]\s*(\d+[.,]?\d*)\s*[xX×]\s*(\d+[.,]?\d*)\s*$/);
-  if(!m) return{tip:s,dim:''};
-  const tip=s.slice(0,m.index).trim();
-  // Format: grosime x lungime x latime → afișăm Lungime x Latime x Grosime
-  const grosime=m[1].replace(',','.'),lungime=m[2].replace(',','.'),latime=m[3].replace(',','.');
-  return{tip,dim:lungime+' × '+latime+' × '+grosime+' mm'};
+// Extrage format tablă (Grosime x Lățime x Lungime) dintr-un string oarecare
+function extractSheetFormat(str){
+  if(!str) return null;
+  const s=String(str).trim();
+  const m=s.match(/(\d+[.,]?\d*)\s*[xX×]\s*(\d+[.,]?\d*)\s*[xX×]\s*(\d+[.,]?\d*)/);
+  if(!m) return null;
+  // Input: Grosime x Lățime x Lungime → Afișare: Lungime × Lățime × Grosime (ca în Nesturi)
+  const grosime=m[1].replace(',','.'),latime=m[2].replace(',','.'),lungime=m[3].replace(',','.');
+  return{match:m[0],matchIndex:m.index,dim:lungime+' × '+latime+' × '+grosime+' mm'};
+}
+
+function parseItemName(name,description){
+  const nameStr=name?String(name).trim():'';
+  // 1. Caută formatul întâi în ITEM NAME (la finalul stringului, cum era tratat original)
+  const mName=nameStr.match(/\s+(\d+[.,]?\d*)\s*[xX×]\s*(\d+[.,]?\d*)\s*[xX×]\s*(\d+[.,]?\d*)\s*$/);
+  if(mName){
+    const tip=nameStr.slice(0,mName.index).trim();
+    const grosime=mName[1].replace(',','.'),latime=mName[2].replace(',','.'),lungime=mName[3].replace(',','.');
+    return{tip,dim:lungime+' × '+latime+' × '+grosime+' mm'};
+  }
+  // 2. Fallback: caută formatul (Grosime x Lățime x Lungime) în ITEM DESCRIPTION
+  const found=extractSheetFormat(description);
+  if(found) return{tip:nameStr,dim:found.dim};
+  // 3. Nimic găsit
+  return{tip:nameStr,dim:''};
 }
 
 function stockSortBy(col){
@@ -3328,14 +3343,24 @@ function renderStocuri(){
 
   const fs=stockFontSize+'px';
   const recRows=rows.slice(0,2000).map(row=>{
+    // Extrage TIP + DIMENSIUNI o singură dată per rând (căutare în ITEM NAME, apoi fallback ITEM DESCRIPTION)
+    const parsedTD=parseItemName(row['ITEM NAME'],row['ITEM DESCRIPTION']);
     const cells=displayHeaders.map(h=>{
-      let v=String(row[h]??'').trim();
+      let v;
       let s=`padding:4px 7px;font-size:${fs};border-bottom:1px solid rgba(42,47,74,.3);`;
-      if(h==='LOCATION') s+='font-weight:700;color:var(--accent);font-family:var(--mono);';
-      if(h==='ITEM NR') s+='font-family:var(--mono);font-size:calc(${fs} - 1px);';
-      if(h==='STANDARD QTY') s+='text-align:right;font-weight:600;color:var(--ok);';
-      if(h==='AVG'&&v&&!isNaN(v)) v=parseFloat(v).toFixed(2);
-      return `<td style="${s}">${esc(v)}</td>`;
+      if(h==='TIP'){
+        v=parsedTD.tip;
+      } else if(h==='DIMENSIUNI'){
+        v=parsedTD.dim;
+        s+='font-family:var(--mono);color:var(--accent);font-weight:600;white-space:nowrap;';
+      } else {
+        v=String(row[h]??'').trim();
+        if(h==='LOCATION') s+='font-weight:700;color:var(--accent);font-family:var(--mono);';
+        if(h==='ITEM NR') s+='font-family:var(--mono);font-size:calc(${fs} - 1px);';
+        if(h==='STANDARD QTY') s+='text-align:right;font-weight:600;color:var(--ok);';
+        if(h==='AVG'&&v&&!isNaN(v)) v=parseFloat(v).toFixed(2);
+      }
+      return `<td style="${s}">${esc(v||'')}</td>`;
     }).join('');
     const labelBtn=`<td style="padding:3px 5px;border-bottom:1px solid rgba(42,47,74,.3);text-align:center">
       <button onclick='printLabel(${JSON.stringify(row)})' title="Printează etichetă"
