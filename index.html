@@ -3443,6 +3443,9 @@ function renderStocuri(){
       <button onclick="openLocationsModal()" style="display:flex;align-items:center;gap:6px;background:var(--surf2);border:1px solid var(--border2);border-radius:8px;padding:7px 14px;cursor:pointer;color:var(--text);font-size:.8rem">
         📍 Locații <span style="background:var(--accent);color:#000;border-radius:9px;padding:1px 8px;font-size:.7rem;font-weight:700">${(stockLocations||[]).length}</span>
       </button>
+      <button onclick="exportStockToExcel()" id="btn-export-stock" style="display:flex;align-items:center;gap:6px;background:var(--surf2);border:1px solid var(--border2);border-radius:8px;padding:7px 14px;cursor:pointer;color:var(--text);font-size:.8rem">
+        📥 Export Excel + Poze
+      </button>
     </div>
     ${stockRecords.length?`
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
@@ -5326,21 +5329,28 @@ function triggerStockPhotoUpload(noteKey){
   inp.click();
 }
 
+// Decupează o fâșie ÎNGUSTĂ din centrul pozei (lățime redusă, înălțime completă) —
+// suficient pentru a număra colile la muchia coletului, fără rezoluție/greutate inutilă.
+// Notă: fără reper de calibrare în cadru nu putem ști exact mm/pixel; folosim o fracțiune
+// din lățimea cadrului (≈18%) ca aproximare rezonabilă pentru "~30mm" la o distanță tipică de fotografiere.
 function compressImageToDataUrl(file,maxDim){
+  const CROP_WIDTH_FRACTION=0.18; // ≈ echivalentul benzii de ~30mm lățime
   return new Promise((resolve,reject)=>{
     const img=new Image();
     const url=URL.createObjectURL(file);
     img.onload=()=>{
-      let{width,height}=img;
-      if(width>maxDim||height>maxDim){
-        const scale=maxDim/Math.max(width,height);
-        width=Math.round(width*scale);height=Math.round(height*scale);
-      }
+      const srcW=img.width,srcH=img.height;
+      const cropW=Math.max(60,Math.round(srcW*CROP_WIDTH_FRACTION));
+      const cropX=Math.round((srcW-cropW)/2);
+      // Limitează înălțimea de ieșire (calitate suficientă pt. a număra colile, fișier mic)
+      const outH=Math.min(srcH,maxDim||1000);
+      const scale=outH/srcH;
+      const outW=Math.round(cropW*scale);
       const cvs=document.createElement('canvas');
-      cvs.width=width;cvs.height=height;
-      cvs.getContext('2d').drawImage(img,0,0,width,height);
+      cvs.width=outW;cvs.height=outH;
+      cvs.getContext('2d').drawImage(img,cropX,0,cropW,srcH,0,0,outW,outH);
       URL.revokeObjectURL(url);
-      resolve(cvs.toDataURL('image/jpeg',.82));
+      resolve(cvs.toDataURL('image/jpeg',.85));
     };
     img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('Nu s-a putut încărca imaginea'));};
     img.src=url;
@@ -5351,7 +5361,7 @@ async function uploadStockPhoto(noteKey,file){
   if(!sb||!currentUser){showToast('⚠ Fără conexiune Supabase — poza nu se poate salva','err');return;}
   showToast('Se încarcă poza...','ok',6000);
   try{
-    const dataUrl=await compressImageToDataUrl(file,1400);
+    const dataUrl=await compressImageToDataUrl(file,1000); // înălțime max — fâșie centrală îngustă, fișier mic
     const res=await fetch(dataUrl);
     const blob=await res.blob();
     const safeName=noteKey.replace(/[^a-zA-Z0-9]/g,'_');
@@ -5395,14 +5405,14 @@ function openStockPhotoViewer(noteKey){
     document.body.appendChild(modal);
   }
   const dt=ph.takenAt?new Date(ph.takenAt):null;
-  const isDev=typeof canManageUsers==='function'&&canManageUsers();
   modal.innerHTML=`<div style="max-width:92vw;max-height:90vh;display:flex;flex-direction:column;gap:10px;align-items:center">
     <img src="${ph.url}" style="max-width:100%;max-height:75vh;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.5)">
-    <div style="display:flex;align-items:center;gap:14px;background:rgba(255,255,255,.08);border-radius:8px;padding:8px 16px">
+    <div style="display:flex;align-items:center;gap:14px;background:rgba(255,255,255,.08);border-radius:8px;padding:8px 16px;flex-wrap:wrap;justify-content:center">
       <span style="color:#fff;font-size:.82rem">📅 ${dt?dt.toLocaleDateString('ro-RO')+' '+dt.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'}):'—'}</span>
       <button onclick="triggerStockPhotoUpload('${esc(noteKey)}');document.getElementById('stock-photo-viewer').style.display='none'"
         style="background:var(--accent);border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:.78rem;font-weight:700">🔄 Reia poza</button>
-      ${isDev?`<button onclick="deleteStockPhoto('${esc(noteKey)}')" style="background:rgba(239,83,80,.2);border:1px solid rgba(239,83,80,.5);color:#ff6b6b;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:.78rem">🗑 Șterge</button>`:''}
+      <button onclick="deleteStockPhoto('${esc(noteKey)}')" title="Coletul s-a terminat — șterge poza de pe server"
+        style="background:rgba(239,83,80,.2);border:1px solid rgba(239,83,80,.5);color:#ff6b6b;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:.78rem">📦 Colet terminat — șterge</button>
       <button onclick="document.getElementById('stock-photo-viewer').style.display='none'"
         style="background:rgba(255,255,255,.1);border:none;color:#fff;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:.78rem">✕ Închide</button>
     </div>
@@ -5411,14 +5421,113 @@ function openStockPhotoViewer(noteKey){
 }
 
 async function deleteStockPhoto(noteKey){
-  if(!confirm('Ștergi poza acestui colet?')) return;
+  if(!confirm('Coletul s-a terminat? Poza va fi ștearsă definitiv de pe server.')) return;
+  const ph=stockPhotos[noteKey];
   if(sb){
+    // Șterge înregistrarea din DB
     await sb.from('stock_photos').delete().eq('photo_key',noteKey);
+    // Șterge și fișierul fizic din Storage
+    if(ph?.url){
+      try{
+        const marker='/stock-photos/';
+        const idx=ph.url.indexOf(marker);
+        if(idx>=0){
+          const path=ph.url.slice(idx+marker.length);
+          await sb.storage.from('stock-photos').remove([path]);
+        }
+      }catch(e){console.warn('[NV] Storage cleanup:',e.message);}
+    }
   }
   delete stockPhotos[noteKey];
-  document.getElementById('stock-photo-viewer').style.display='none';
+  const viewer=document.getElementById('stock-photo-viewer');
+  if(viewer) viewer.style.display='none';
   if(typeof renderStocuri==='function') renderStocuri();
-  showToast('✓ Poză ștearsă');
+  showToast('✓ Poză ștearsă — colet finalizat');
+}
+</script>
+
+
+<script>
+/* ══ EXPORT STOCURI — Excel (.xlsx) + poze colete, arhivat ZIP pentru istoric local ══ */
+async function exportStockToExcel(){
+  const btn=document.getElementById('btn-export-stock');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Se exportă...';}
+  try{
+    if(typeof XLSX==='undefined'){
+      await new Promise((res,rej)=>{
+        const s=document.createElement('script');
+        s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+        s.onload=res;s.onerror=()=>rej(new Error('SheetJS CDN'));
+        document.head.appendChild(s);
+      });
+    }
+    if(typeof JSZip==='undefined'){
+      await new Promise((res,rej)=>{
+        const s=document.createElement('script');
+        s.src='https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+        s.onload=res;s.onerror=()=>rej(new Error('JSZip CDN'));
+        document.head.appendChild(s);
+      });
+    }
+
+    const visCols=stockColumns.filter(c=>c.show!==false);
+    const rowsData=stockRecords.map(r=>r.data||r);
+
+    // Construiește foaia Excel — coloanele vizibile + Foto (nume fișier local) + Data poză
+    const exportRows=rowsData.map(row=>{
+      const parsedTD=parseItemName(row['ITEM NAME']);
+      const noteKey=stockNoteKey(row);
+      const ph=stockPhotos[noteKey];
+      const line={};
+      visCols.forEach(col=>{
+        if(col.key==='TIP') line[col.label]=parsedTD.tip;
+        else if(col.key==='DIMENSIUNI') line[col.label]=parsedTD.dim;
+        else if(col.key==='OBSERVATII') line[col.label]=stockNotes[noteKey]||'';
+        else if(col.key==='FOTO') line[col.label]=ph?('poze/'+safeId(noteKey)+'.jpg'):'';
+        else line[col.label]=row[col.key]||'';
+      });
+      if(ph) line['Data poză']=ph.takenAt?new Date(ph.takenAt).toLocaleString('ro-RO'):'';
+      return line;
+    });
+
+    const ws=XLSX.utils.json_to_sheet(exportRows);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,'Stocuri');
+    const xlsxBuf=XLSX.write(wb,{type:'array',bookType:'xlsx'});
+
+    // Arhivă ZIP: fișierul Excel + folder poze (pentru istoric local pe PC)
+    const zip=new JSZip();
+    zip.file('Stocuri_'+new Date().toISOString().slice(0,10)+'.xlsx',xlsxBuf);
+    const photoEntries=Object.entries(stockPhotos);
+    if(photoEntries.length){
+      const folder=zip.folder('poze');
+      let done=0;
+      for(const[key,ph]of photoEntries){
+        try{
+          const res=await fetch(ph.url);
+          const blob=await res.blob();
+          folder.file(safeId(key)+'.jpg',blob);
+        }catch(e){console.warn('[NV] export photo fetch failed:',key,e.message);}
+        done++;
+        if(btn) btn.textContent=`⏳ Poze ${done}/${photoEntries.length}...`;
+      }
+    }
+
+    if(btn) btn.textContent='⏳ Se generează arhiva...';
+    const zipBlob=await zip.generateAsync({type:'blob'});
+    const url=URL.createObjectURL(zipBlob);
+    const a=document.createElement('a');
+    a.href=url;a.download='Export_Stocuri_'+new Date().toISOString().slice(0,10)+'.zip';
+    document.body.appendChild(a);a.click();a.remove();
+    URL.revokeObjectURL(url);
+
+    showToast('✓ Export finalizat — '+exportRows.length+' rânduri + '+photoEntries.length+' poze');
+  }catch(e){
+    console.error('[NV] exportStockToExcel:',e);
+    showToast('⚠ Eroare export: '+e.message,'err',6000);
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='📥 Export Excel + Poze';}
+  }
 }
 </script>
 </body>
