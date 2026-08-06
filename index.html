@@ -1112,42 +1112,60 @@ function checkSourceComplete(source){
   return progs.every(p=>isCompleted(p));
 }
 
-function autoDeleteCompletedSource(source){
+async function autoDeleteCompletedSource(source){
   if(!checkSourceComplete(source)) return;
-  console.log('[NV] Sursă raportată integral → ștergere automată:',source);
+  console.log('[NV] Sursă raportată integral → arhivare + ștergere automată:',source);
 
-  // Salvează datele complete în jurnalul schimbului ACTIV (dacă e cazul) — altfel s-ar pierde la Finalizare Schimb
-  if(shiftState.active){
-    const progsOfSource=allPrograms.filter(p=>p.source===source&&p.machine===shiftState.machine);
-    progsOfSource.forEach(p=>{
-      const ok=opKey(p);const d=opData[ok]||{};
-      const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
-      const debTotal=parseInt(d.coliDebitate)||0;
-      const debInc=(typeof incrementalDeb==='function')?incrementalDeb(ok,debTotal):debTotal;
-      const timpInc=(typeof incrementalTimpProgr==='function')?incrementalTimpProgr(p,ok,debTotal):autoTimpProgr(p,debTotal);
-      shiftState.completedRealizations.push({
-        source:p.source,programName:p.programName,machine:p.machine,
-        sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
-        coliDebitate:debInc,coliDebitateTotal:debTotal,motivDepasire:d.motivDepasire||'',
-        scheduleNo:getSchedNo(p.source),sheetType:getSheetType(p.source),
-        moId:d.moId||'',
-        timpProgram:fmtCutMin(timpInc),
-        timpRealizat:d.timpRealizat||'',
-        itemNo:p.parts?.[0]?.alias||'',
-        dimProgram:d.dimProgram||'',
-        formatColi:d.formatColi||displaySheet(p.sheetMaterial),
-        codMovex:d.codMovex||pickingData[sk]?.sheetCode||'',
-        cutMinutes:p.cutMinutes||0
-      });
-    });
+  const progsOfSource=allPrograms.filter(p=>p.source===source);
+  const archiveEntries=[];
+
+  progsOfSource.forEach(p=>{
+    const ok=opKey(p);const d=opData[ok]||{};
+    const sk=sheetKey(p.sheetMaterial,getSheetType(p.source));
+    const debTotal=parseInt(d.coliDebitate)||0;
+    const debInc=(typeof incrementalDeb==='function')?incrementalDeb(ok,debTotal):debTotal;
+    const timpInc=(typeof incrementalTimpProgr==='function')?incrementalTimpProgr(p,ok,debTotal):autoTimpProgr(p,debTotal);
+    const entry={
+      source:p.source,programName:p.programName,machine:p.machine,
+      sheetMaterial:p.sheetMaterial,numOfSheet:effectiveNec(p),
+      coliDebitate:debInc,coliDebitateTotal:debTotal,motivDepasire:d.motivDepasire||'',
+      scheduleNo:getSchedNo(p.source),sheetType:getSheetType(p.source),
+      moId:d.moId||'',
+      timpProgram:fmtCutMin(timpInc),
+      timpRealizat:d.timpRealizat||'',
+      itemNo:p.parts?.[0]?.alias||'',
+      dimProgram:d.dimProgram||'',
+      formatColi:d.formatColi||displaySheet(p.sheetMaterial),
+      codMovex:d.codMovex||pickingData[sk]?.sheetCode||'',
+      cutMinutes:p.cutMinutes||0
+    };
+    archiveEntries.push(entry);
+    // Salvează și în jurnalul schimbului ACTIV (pentru raportul de schimb curent)
+    if(shiftState.active&&p.machine===shiftState.machine) shiftState.completedRealizations.push(entry);
+  });
+
+  // Arhivă PERMANENTĂ în Supabase — istoric complet, independent de schimburi
+  if(sb&&currentUser&&archiveEntries.length){
+    try{
+      await sb.from('completed_nests_log').insert(archiveEntries.map(e=>({
+        source:e.source,program_name:e.programName,machine:e.machine,
+        sheet_material:e.sheetMaterial,num_of_sheet:e.numOfSheet,
+        coli_debitate:e.coliDebitateTotal,schedule_no:e.scheduleNo,sheet_type:e.sheetType,
+        mo_id:e.moId,item_no:e.itemNo,cod_movex:e.codMovex,
+        completed_by:currentUser.id,completed_at:new Date().toISOString()
+      })));
+    }catch(ex){console.warn('[NV] completed_nests_log insert:',ex.message);}
   }
 
-  // Șterge din memorie
+  // Șterge din memorie — inclusiv opData (CRITIC: fără asta, un reimport cu același
+  // nume de fișier ar apărea instant "realizat integral" din datele vechi)
   for(let i=allPrograms.length-1;i>=0;i--){
-    if(allPrograms[i].source===source) allPrograms.splice(i,1);
+    if(allPrograms[i].source===source){
+      delete opData[opKey(allPrograms[i])];
+      allPrograms.splice(i,1);
+    }
   }
   delete scheduleData[source];
-  // Șterge din Supabase
   if(typeof deleteNestFromSupabase==='function') deleteNestFromSupabase(source);
   if(typeof deleteImageCache==='function') deleteImageCache(source);
   if(typeof deleteSourceImages==='function') deleteSourceImages(source);
@@ -1155,7 +1173,7 @@ function autoDeleteCompletedSource(source){
   renderNesturi();
   if(typeof renderPicking==='function') renderPicking();
   if(typeof renderRaportare==='function'&&activeTab==='raportare') renderRaportare();
-  showToast('✓ Nest "'+source+'" raportat integral — eliminat din Nesturi + Picking (rămâne în Rapoarte)');
+  showToast('✓ Nest "'+source+'" raportat integral — arhivat, eliminat din Nesturi + Picking');
 }
 
 /* ══ PARSER LST (Trumpf TruTops) ══ */
@@ -4459,6 +4477,7 @@ function buildRapRow(p){
         <span style="font-size:.85rem;font-weight:700">📋 Schimb de Lucru</span>
         <span style="font-size:.7rem;color:var(--dim)">480 min · pauza 20 min</span>
         <button class="btn-sm btn-cancel-def" style="margin-left:auto" onclick="openShiftReportsModal()">📑 Rapoarte publicate</button>
+        <button class="btn-sm btn-cancel-def" onclick="openCompletedHistoryModal()">📜 Istoric Nesturi Realizate</button>
       </div>
       ${shiftSection}
     </div>
@@ -5576,6 +5595,89 @@ async function exportStockToExcel(){
   }finally{
     if(btn){btn.disabled=false;btn.textContent='📥 Export Excel + Poze';}
   }
+}
+</script>
+
+
+<script>
+/* ══ ISTORIC NESTURI REALIZATE — arhivă permanentă, independentă de schimburi ══ */
+let _histFilter='';
+let _histMachine='';
+let _histCache=[];
+
+async function openCompletedHistoryModal(){
+  let modal=document.getElementById('completed-history-modal');
+  if(!modal){
+    modal=document.createElement('div');
+    modal.id='completed-history-modal';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:3200;display:flex;align-items:center;justify-content:center;padding:16px';
+    modal.onclick=e=>{if(e.target===modal) modal.style.display='none';};
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML=`<div style="background:var(--surf);border:1px solid var(--border);border-radius:var(--r);width:min(1000px,96vw);max-height:88vh;overflow-y:auto;padding:18px;box-shadow:var(--sh)">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+      <h3 style="margin:0;font-size:.95rem">📜 Istoric Nesturi Realizate Integral</h3>
+      <input type="text" id="hist-search" placeholder="🔍 Caută sursă, program, Schedule No…" value="${esc(_histFilter)}"
+        style="flex:1;min-width:200px;background:var(--surf2);border:1px solid var(--border2);border-radius:7px;padding:6px 12px;color:var(--text);font-size:.78rem;outline:none"
+        oninput="histFilterChange(this.value)">
+      <button class="logout-btn" onclick="document.getElementById('completed-history-modal').style.display='none'">✕</button>
+    </div>
+    <div id="hist-list"><div style="text-align:center;padding:20px;color:var(--dim)">Se încarcă…</div></div>
+  </div>`;
+  modal.style.display='flex';
+
+  if(!sb){document.getElementById('hist-list').innerHTML='<div class="empty-state"><div class="et">Fără conexiune Supabase.</div></div>';return;}
+  const{data,error}=await sb.from('completed_nests_log').select('*').order('completed_at',{ascending:false}).limit(500);
+  if(error){document.getElementById('hist-list').innerHTML='<div class="empty-state"><div class="et" style="color:var(--warn)">Eroare: '+esc(error.message)+'</div></div>';return;}
+  _histCache=data||[];
+  renderHistList();
+}
+
+let _histTimer=null;
+function histFilterChange(v){
+  _histFilter=v;
+  clearTimeout(_histTimer);
+  _histTimer=setTimeout(renderHistList,250);
+}
+
+function renderHistList(){
+  const el=document.getElementById('hist-list');
+  if(!el) return;
+  const q=_histFilter.trim().toLowerCase();
+  let rows=_histCache;
+  if(q) rows=rows.filter(r=>
+    (r.source||'').toLowerCase().includes(q)||
+    (r.program_name||'').toLowerCase().includes(q)||
+    (r.schedule_no||'').toLowerCase().includes(q)||
+    (r.mo_id||'').toLowerCase().includes(q)
+  );
+  if(!rows.length){el.innerHTML='<div class="empty-state" style="padding:20px"><div class="et">Niciun rezultat.</div></div>';return;}
+
+  const totalColi=rows.reduce((s,r)=>s+(parseInt(r.coli_debitate)||0),0);
+
+  el.innerHTML=`
+    <div style="font-size:.72rem;color:var(--muted);margin-bottom:8px">${rows.length} nesturi realizate · <strong style="color:var(--ok)">${totalColi}</strong> coli total</div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.72rem">
+      <thead><tr style="background:var(--surf3)">
+        ${['Data','Sursă','Program','Mașină','Schedule No','Tip Tablă','MO ID','Item No','Cod Movex','Coli','Coli Nec.'].map(h=>`<th style="padding:5px 8px;text-align:left;color:var(--muted)">${h}</th>`).join('')}
+      </tr></thead>
+      <tbody>${rows.map(r=>{
+        const dt=new Date(r.completed_at);
+        return `<tr style="border-top:1px solid var(--border)">
+          <td style="padding:4px 8px;font-family:var(--mono);color:var(--dim);white-space:nowrap">${dt.toLocaleDateString('ro-RO')} ${dt.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'})}</td>
+          <td style="padding:4px 8px;font-family:var(--mono)">${esc(r.source||'')}</td>
+          <td style="padding:4px 8px">${esc(r.program_name||'')}</td>
+          <td style="padding:4px 8px">${esc(r.machine||'')}</td>
+          <td style="padding:4px 8px;color:var(--accent)">${esc(r.schedule_no||'—')}</td>
+          <td style="padding:4px 8px">${esc(r.sheet_type||'—')}</td>
+          <td style="padding:4px 8px">${esc(r.mo_id||'—')}</td>
+          <td style="padding:4px 8px">${esc(r.item_no||'—')}</td>
+          <td style="padding:4px 8px">${esc(r.cod_movex||'—')}</td>
+          <td style="padding:4px 8px;text-align:center;color:var(--ok);font-weight:700">${r.coli_debitate}</td>
+          <td style="padding:4px 8px;text-align:center">${r.num_of_sheet}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>`;
 }
 </script>
 </body>
