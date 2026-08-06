@@ -2995,15 +2995,24 @@ async function loadAllData(){
   try{
     const{data:rc}=await sb.from('app_settings').select('value').eq('key','rap_columns').maybeSingle();
     if(rc?.value&&Array.isArray(rc.value)&&rc.value.length){
-      rapColumns=rc.value;
+      const RAP_DEFAULTS=[
+        {key:'prio',label:'Prio.',width:50},{key:'program',label:'Program',width:150},
+        {key:'moId',label:'MO ID',width:100},{key:'schedNo',label:'Schedule No',width:110},
+        {key:'timpProgr',label:'Timp Progr.',width:110},{key:'timpRealizat',label:'Timp Realizat',width:90},
+        {key:'itemNo',label:'Item No',width:100},{key:'dimProgram',label:'Dim. Program',width:110},
+        {key:'formatColi',label:'Format Coli Deb.',width:110},{key:'codMovex',label:'Cod Movex',width:110},
+        {key:'cantitate',label:'Cantitate',width:170},{key:'coliSchedule',label:'Coli Schedule',width:90},
+      ];
+      const savedKeys=new Set(rc.value.map(c=>c.key));
+      rapColumns=[...rc.value,...RAP_DEFAULTS.filter(d=>!savedKeys.has(d.key)).map(d=>({...d,show:true}))];
       localStorage.setItem('nv_rap_columns',JSON.stringify(rapColumns));
     }
   }catch(_){}
-  // Config coloane Stocuri din Supabase
+  // Config coloane Stocuri din Supabase (cu merge pentru coloane noi introduse ulterior)
   try{
     const{data:sc}=await sb.from('app_settings').select('value').eq('key','stock_columns').maybeSingle();
     if(sc?.value&&Array.isArray(sc.value)&&sc.value.length){
-      stockColumns=sc.value;
+      stockColumns=typeof mergeNewStockColumns==='function'?mergeNewStockColumns(sc.value):sc.value;
       localStorage.setItem('nv_stock_columns',JSON.stringify(stockColumns));
     }
   }catch(_){}
@@ -4946,7 +4955,18 @@ function loadRapColumnsPersist(){
     const stored=localStorage.getItem('nv_rap_columns');
     if(stored){
       const parsed=JSON.parse(stored);
-      if(Array.isArray(parsed)&&parsed.length) rapColumns=parsed;
+      if(Array.isArray(parsed)&&parsed.length){
+        const RAP_DEFAULTS=[
+          {key:'prio',label:'Prio.',width:50},{key:'program',label:'Program',width:150},
+          {key:'moId',label:'MO ID',width:100},{key:'schedNo',label:'Schedule No',width:110},
+          {key:'timpProgr',label:'Timp Progr.',width:110},{key:'timpRealizat',label:'Timp Realizat',width:90},
+          {key:'itemNo',label:'Item No',width:100},{key:'dimProgram',label:'Dim. Program',width:110},
+          {key:'formatColi',label:'Format Coli Deb.',width:110},{key:'codMovex',label:'Cod Movex',width:110},
+          {key:'cantitate',label:'Cantitate',width:170},{key:'coliSchedule',label:'Coli Schedule',width:90},
+        ];
+        const savedKeys=new Set(parsed.map(c=>c.key));
+        rapColumns=[...parsed,...RAP_DEFAULTS.filter(d=>!savedKeys.has(d.key)).map(d=>({...d,show:true}))];
+      }
     }
   }catch(_){}
 }
@@ -5146,10 +5166,38 @@ function saveStockColumnsPersist(){
       .then(({error})=>{if(error) console.warn('[NV] stockColumns save:',error.message);});
   }
 }
+// Adaugă la o listă de coloane salvată orice coloană NOUĂ definită ulterior în cod
+// (ex. FOTO, OBSERVATII) care lipsește dintr-o configurație veche salvată de utilizator —
+// altfel coloanele noi introduse în actualizări nu ar mai apărea niciodată pentru cei
+// care au deja o configurație personalizată salvată.
+function mergeNewStockColumns(saved){
+  const DEFAULTS=[
+    {key:'ITEM NR',label:'Item Nr',width:110},
+    {key:'TIP',label:'Tip',width:170},
+    {key:'DIMENSIUNI',label:'Dimensiuni',width:130},
+    {key:'ITEM DESCRIPTION',label:'Item Description',width:220},
+    {key:'LOTNR',label:'Lot Nr',width:100},
+    {key:'LOT REF 1',label:'Lot Ref 1',width:110},
+    {key:'LOCATION',label:'Locație',width:90},
+    {key:'AVG',label:'Preț unitar mediu',width:110},
+    {key:'STANDARD QTY',label:'Cantitate în stoc',width:110},
+    {key:'OBSERVATII',label:'Observații',width:200},
+    {key:'FOTO',label:'Foto Colet',width:110},
+  ];
+  const merged=[...saved];
+  const savedKeys=new Set(saved.map(c=>c.key));
+  DEFAULTS.forEach(def=>{
+    if(!savedKeys.has(def.key)) merged.push({...def,show:true});
+  });
+  return merged;
+}
 function loadStockColumnsPersist(){
   try{
     const stored=localStorage.getItem('nv_stock_columns');
-    if(stored){const parsed=JSON.parse(stored);if(Array.isArray(parsed)&&parsed.length) stockColumns=parsed;}
+    if(stored){
+      const parsed=JSON.parse(stored);
+      if(Array.isArray(parsed)&&parsed.length) stockColumns=mergeNewStockColumns(parsed);
+    }
   }catch(_){}
 }
 loadStockColumnsPersist();
