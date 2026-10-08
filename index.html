@@ -5680,5 +5680,153 @@ function renderHistList(){
     </table></div>`;
 }
 </script>
+<script>
+/* ═══ Configurare coloane generică — toate tabelele (ordine + vizibilitate), sync pe utilizator ═══ */
+(function(){
+  let TC_CFG={};            // {tid:{order:[labels],hidden:[labels]}}
+  let tcObs=null, tcTimer=null, tcApplying=false, tcEditTid=null, tcEditState=null;
+  const SKIP_CLASSES=['pt'];
+  const uid=()=> (typeof currentUser!=='undefined'&&currentUser&&currentUser.id)||'anon';
+  const lsKey=()=>'nv_tblcols_'+uid();
+  function tcLoadLocal(){try{TC_CFG=JSON.parse(localStorage.getItem(lsKey())||'{}')||{};}catch(_){TC_CFG={};}}
+  async function tcLoadRemote(){
+    tcLoadLocal();
+    try{
+      if(typeof sb==='undefined'||!sb||!currentUser) return;
+      const{data}=await sb.from('app_settings').select('value').eq('key','tblcols_'+currentUser.id).maybeSingle();
+      if(data&&data.value&&typeof data.value==='object'){TC_CFG=data.value;try{localStorage.setItem(lsKey(),JSON.stringify(TC_CFG));}catch(_){}}
+    }catch(e){console.warn('[TC] load',e);}
+  }
+  async function tcSave(){
+    try{localStorage.setItem(lsKey(),JSON.stringify(TC_CFG));}catch(_){}
+    try{
+      if(typeof sb!=='undefined'&&sb&&currentUser){
+        const{error}=await sb.from('app_settings').upsert({key:'tblcols_'+currentUser.id,value:TC_CFG,updated_by:currentUser.id,updated_at:new Date().toISOString()},{onConflict:'key'});
+        if(error) console.warn('[TC] save',error.message);
+      }
+    }catch(e){console.warn('[TC] save',e);}
+  }
+  function eligible(t){
+    if(t.dataset.tcSkip) return false;
+    if(t.querySelector('.rap-col-resizer')) return false;           // Raportare principal + Stocuri au sistem propriu
+    if(t.closest('#view-stocuri')) return false;
+    for(const c of SKIP_CLASSES) if(t.classList.contains(c)) return false;
+    const hr=t.tHead&&t.tHead.rows[0]; if(!hr||hr.cells.length<2) return false;
+    for(const c of hr.cells) if(c.colSpan>1) return false;
+    return true;
+  }
+  function headLabels(t){
+    return Array.from(t.tHead.rows[0].cells).map((c,i)=>{
+      const clone=c.cloneNode(true);clone.querySelectorAll('button,.tc-btn,span.rap-col-resizer').forEach(x=>x.remove());
+      const s=(clone.textContent||'').replace(/[▲▼↑↓⇅]/g,'').replace(/\s+/g,' ').trim();
+      return s||('·'+i);
+    });
+  }
+  function tidOf(t,labels){
+    if(t.dataset.tcId) return t.dataset.tcId;
+    const ctx=(t.closest('.view')||t.closest('[id]')||{}).id||'x';
+    const cls=(t.className||'t').toString().split(/\s+/)[0]||'t';
+    return ctx+'|'+cls+'|'+labels[0];
+  }
+  function niceName(l){return l.startsWith('·')?'(coloană acțiuni)':l;}
+  function apply(t){
+    const labels=headLabels(t), n=labels.length, tid=tidOf(t,labels);
+    t.dataset.tcId=tid;
+    const cfg=TC_CFG[tid];
+    // buton
+    if(!t.previousElementSibling||!t.previousElementSibling.classList.contains('tc-bar')){
+      const bar=document.createElement('div');bar.className='tc-bar';bar.style.cssText='text-align:right;padding:2px 4px';
+      bar.innerHTML='<button class="tc-btn" style="background:var(--surface2,#222);color:var(--text,#eee);border:1px solid var(--border,#444);border-radius:5px;padding:2px 8px;font-size:.68rem;cursor:pointer" title="Ordine / vizibilitate coloane">⚙ Coloane</button>';
+      bar.firstChild.onclick=ev=>{ev.stopPropagation();tcOpen(t);};
+      t.parentNode.insertBefore(bar,t);
+    }
+    if(!cfg) { // resetare la implicit dacă am modificat anterior
+      if(!t.dataset.tcModified) return;
+    }
+    const order=(cfg&&cfg.order)||[], hidden=new Set((cfg&&cfg.hidden)||[]);
+    const idxByLabel={};labels.forEach((l,i)=>idxByLabel[l]=i);
+    let perm=[];order.forEach(l=>{if(l in idxByLabel&&!perm.includes(idxByLabel[l])) perm.push(idxByLabel[l]);});
+    for(let i=0;i<n;i++) if(!perm.includes(i)) perm.push(i);
+    const rows=Array.from(t.rows);
+    rows.forEach(r=>{
+      if(r.cells.length!==n) return;
+      let skip=false;for(const c of r.cells) if(c.colSpan>1){skip=true;break;}
+      if(skip) return;
+      const cells=Array.from(r.cells);
+      const cur=cells.map((c,i)=>i);
+      const same=perm.every((p,i)=>cells[p]===r.cells[i]);
+      if(!same){const frag=perm.map(p=>cells[p]);frag.forEach(c=>r.appendChild(c));}
+      Array.from(r.cells).forEach((c,i)=>{
+        const lab=labels[perm[i]];const hide=hidden.has(lab);
+        const want=hide?'none':'';
+        if(c.style.display!==want) c.style.display=want;
+      });
+    });
+    t.dataset.tcModified=cfg?'1':'';
+  }
+  function applyAll(){
+    if(tcApplying) return; tcApplying=true;
+    if(tcObs) tcObs.disconnect();
+    try{document.querySelectorAll('table').forEach(t=>{try{if(eligible(t)) apply(t);}catch(e){console.warn('[TC]',e);}});}
+    finally{tcApplying=false;if(tcObs) tcObs.observe(document.body,{childList:true,subtree:true});}
+  }
+  function schedule(){clearTimeout(tcTimer);tcTimer=setTimeout(applyAll,120);}
+
+  /* ── UI configurare ── */
+  function tcOpen(t){
+    const labels=headLabels(t), tid=tidOf(t,labels), cfg=TC_CFG[tid]||{};
+    const order=[...(cfg.order||[]).filter(l=>labels.includes(l))];
+    labels.forEach(l=>{if(!order.includes(l)) order.push(l);});
+    tcEditTid=tid;tcEditState={order,hidden:new Set(cfg.hidden||[])};
+    let m=document.getElementById('tc-modal');
+    if(!m){m=document.createElement('div');m.id='tc-modal';
+      m.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100000;display:flex;align-items:center;justify-content:center;padding:12px';
+      m.onclick=e=>{if(e.target===m) m.remove();};document.body.appendChild(m);}
+    tcRender();
+  }
+  function tcRender(){
+    const m=document.getElementById('tc-modal');if(!m) return;
+    const s=tcEditState;
+    m.innerHTML=`<div style="background:#fff;color:#000;border-radius:10px;padding:14px;max-width:420px;width:100%;max-height:85vh;overflow:auto;font-family:inherit">
+      <div style="font-weight:700;margin-bottom:4px">⚙ Coloane tabel</div>
+      <div style="font-size:.72rem;color:#555;margin-bottom:8px">Bifează coloanele vizibile și ordonează-le. Setările se păstrează pe contul tău, pe toate dispozitivele.</div>
+      ${s.order.map((l,i)=>`<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid #ddd">
+        <input type="checkbox" ${s.hidden.has(l)?'':'checked'} onchange="window.__tcToggle(${i})" style="width:18px;height:18px">
+        <span style="flex:1;font-size:.85rem">${niceName(l).replace(/</g,'&lt;')}</span>
+        <button onclick="window.__tcMove(${i},-1)" ${i===0?'disabled':''} style="padding:2px 9px">▲</button>
+        <button onclick="window.__tcMove(${i},1)" ${i===s.order.length-1?'disabled':''} style="padding:2px 9px">▼</button></div>`).join('')}
+      <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+        <button onclick="window.__tcReset()" style="padding:6px 12px">Resetare</button>
+        <button onclick="document.getElementById('tc-modal').remove()" style="padding:6px 12px">Anulează</button>
+        <button onclick="window.__tcSaveClose()" style="padding:6px 14px;background:#2563eb;color:#fff;border:0;border-radius:5px;font-weight:700">Salvează</button></div></div>`;
+  }
+  window.__tcToggle=i=>{const l=tcEditState.order[i];tcEditState.hidden.has(l)?tcEditState.hidden.delete(l):tcEditState.hidden.add(l);};
+  window.__tcMove=(i,d)=>{const o=tcEditState.order;const j=i+d;if(j<0||j>=o.length) return;[o[i],o[j]]=[o[j],o[i]];tcRender();};
+  window.__tcReset=async()=>{delete TC_CFG[tcEditTid];document.getElementById('tc-modal')?.remove();applyAll();await tcSave();};
+  window.__tcSaveClose=async()=>{
+    const s=tcEditState;
+    if(s.order.length-s.hidden.size<1){alert('Cel puțin o coloană trebuie să fie vizibilă.');return;}
+    TC_CFG[tcEditTid]={order:s.order,hidden:[...s.hidden]};
+    document.getElementById('tc-modal')?.remove();
+    applyAll();
+    await tcSave();
+  };
+
+  /* ── integrare ── */
+  window.tcApplyAll=applyAll;
+  window.tcReload=async()=>{await tcLoadRemote();applyAll();};
+  tcLoadLocal();
+  tcObs=new MutationObserver(()=>{if(!tcApplying) schedule();});
+  const start=()=>{tcObs.observe(document.body,{childList:true,subtree:true});schedule();};
+  if(document.body) start(); else document.addEventListener('DOMContentLoaded',start);
+  try{
+    if(typeof loadAllData==='function'){
+      const _lad=loadAllData;
+      loadAllData=async function(){const r=await _lad.apply(this,arguments);try{await tcLoadRemote();applyAll();}catch(_){}return r;};
+    }
+  }catch(e){console.warn('[TC] hook',e);}
+})();
+</script>
+
 </body>
 </html>
