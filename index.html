@@ -727,7 +727,7 @@ table.stat-log tr:last-child td{border-bottom:none;}
 </div>
 </div>
 <div id="view-stocuri" class="view" style="max-width:100%;width:100%">
-  <div style="padding:10px 16px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+  <div id="stock-import-bar" style="padding:10px 16px 0;display:none;align-items:center;gap:10px;flex-wrap:wrap">
     <strong style="font-size:.82rem;color:var(--text)">📦 Import Stocuri</strong>
     <input type="file" id="stock-file-inp-top" accept=".csv,.xlsx,.xls,.xlsm" style="display:none" onchange="importStockFile(this.files[0]);this.value=''">
     <button class="auth-btn" style="max-width:200px;font-size:.78rem;padding:7px 14px" onclick="document.getElementById('stock-file-inp-top').click()">
@@ -914,6 +914,8 @@ function switchTab(tab){
   // Dropzone vizibil DOAR în Nesturi
   const dz=document.getElementById('dropzone-side');
   if(dz) dz.style.display=(tab==='nesturi')?'flex':'none';
+  const sib=document.getElementById('stock-import-bar');
+  if(sib) sib.style.display=(tab==='stocuri'&&canManageUsers())?'flex':'none';
 }
 
 function updateTabCounts(){
@@ -3248,6 +3250,7 @@ async function removeStockLocation(code){
 
 /* ── STOCK IMPORT ── */
 async function importStockFile(file){
+  if(!canManageUsers()){ if(typeof showToast==='function') showToast('⚠ Doar adminii pot importa stocul','err'); return; }
   if(!file){console.warn('importStockFile: no file');return;}
   console.log('[NV] Importing stock file:', file.name, file.size, 'bytes');
 
@@ -3416,7 +3419,7 @@ function renderStocuri(){
   };
   const tableHeaders=`<th style="${thSt}min-width:60px"><div style="padding:5px 7px;font-size:.6rem;text-transform:uppercase;color:var(--muted)">Etichetă</div></th>`
     +visCols.map(col=>`<th style="${thSt}">${thInner(col)}</th>`).join('')
-    +`<th style="${thSt}width:32px;text-align:center"><button onclick="openStockColumnsConfig()" title="Configurează coloane" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.85rem;padding:5px">⚙</button></th>`;
+    +`<th style="${thSt}width:32px;text-align:center">${canManageUsers()?`<button onclick="openStockColumnsConfig()" title="Configurează coloane" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.85rem;padding:5px">⚙</button>`:''}</th>`;
 
   const recRows=rows.slice(0,2000).map(row=>{
     const parsedTD=parseItemName(row['ITEM NAME']);
@@ -3467,12 +3470,12 @@ function renderStocuri(){
 
   el.innerHTML=`
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-      <button onclick="openLocationsModal()" style="display:flex;align-items:center;gap:6px;background:var(--surf2);border:1px solid var(--border2);border-radius:8px;padding:7px 14px;cursor:pointer;color:var(--text);font-size:.8rem">
+      ${canManageUsers()?`      <button onclick="openLocationsModal()" style="display:flex;align-items:center;gap:6px;background:var(--surf2);border:1px solid var(--border2);border-radius:8px;padding:7px 14px;cursor:pointer;color:var(--text);font-size:.8rem">
         📍 Locații <span style="background:var(--accent);color:#000;border-radius:9px;padding:1px 8px;font-size:.7rem;font-weight:700">${(stockLocations||[]).length}</span>
       </button>
       <button onclick="exportStockToExcel()" id="btn-export-stock" style="display:flex;align-items:center;gap:6px;background:var(--surf2);border:1px solid var(--border2);border-radius:8px;padding:7px 14px;cursor:pointer;color:var(--text);font-size:.8rem">
         📥 Export Excel + Poze
-      </button>
+      </button>`:''}
     </div>
     ${stockRecords.length?`
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
@@ -3493,7 +3496,7 @@ function renderStocuri(){
         </table>
       </div>
       ${rows.length>2000?`<div style="padding:6px;font-size:.72rem;color:var(--muted);text-align:center">Afișate primele 2000 din ${rows.length}.</div>`:''}
-    `:'<div class="empty-state" style="padding:24px"><div class="et">Importă un fișier Excel (.xlsx) sau CSV.</div></div>'}`;
+    `:'<div class="empty-state" style="padding:24px"><div class="et">'+(canManageUsers()?'Importă un fișier Excel (.xlsx) sau CSV.':'Stocul nu a fost încă încărcat de un administrator.')+'</div></div>'}`;
 }
 async function renderUtilizatori(){
   const el=document.getElementById('utilizatori-main');
@@ -5243,6 +5246,7 @@ function stockColResizeEnd(){
 }
 
 function openStockColumnsConfig(){
+  if(!canManageUsers()) return;
   let modal=document.getElementById('stock-cols-modal');
   if(!modal){
     modal=document.createElement('div');
@@ -5387,13 +5391,67 @@ async function loadStockNotes(){
 <script>
 /* ══ FOTO COLET — per LOT NR, cu dată, stocat în Supabase Storage ══ */
 
+const STOCK_CROP_FRACTION=0.36; // fâșia salvată = 36% din lățimea cadrului (de 2 ori mai lată decât înainte)
+
 function triggerStockPhotoUpload(noteKey){
+  if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){ openStockCamera(noteKey); }
+  else stockPhotoNativeFallback(noteKey);
+}
+function stockPhotoNativeFallback(noteKey){
   const inp=document.createElement('input');
   inp.type='file';inp.accept='image/*';inp.capture='environment';
-  inp.onchange=async()=>{
-    if(inp.files[0]) await uploadStockPhoto(noteKey,inp.files[0]);
-  };
+  inp.onchange=async()=>{ if(inp.files[0]) await uploadStockPhoto(noteKey,inp.files[0]); };
   inp.click();
+}
+// Cameră în aplicație cu cadru ghid: zona luminoasă din centru = ce se salvează
+async function openStockCamera(noteKey){
+  let stream=null;
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}},audio:false});
+  }catch(e){ console.warn('[NV] camera',e); stockPhotoNativeFallback(noteKey); return; }
+  const f=STOCK_CROP_FRACTION, side=((1-f)/2*100).toFixed(2);
+  const m=document.createElement('div');
+  m.style.cssText='position:fixed;inset:0;background:#000;z-index:100001;display:flex;flex-direction:column';
+  m.innerHTML=`<div style="flex:1;position:relative;min-height:0;display:flex;align-items:center;justify-content:center">
+      <div id="sc-wrap" style="position:relative;max-width:100%;max-height:100%;line-height:0">
+        <video id="sc-video" autoplay playsinline muted style="max-width:100vw;max-height:calc(100vh - 90px);display:block"></video>
+        <div style="position:absolute;top:0;bottom:0;left:0;width:${side}%;background:rgba(0,0,0,.6)"></div>
+        <div style="position:absolute;top:0;bottom:0;right:0;width:${side}%;background:rgba(0,0,0,.6)"></div>
+        <div style="position:absolute;top:0;bottom:0;left:${side}%;right:${side}%;border-left:2px solid #22c55e;border-right:2px solid #22c55e"></div>
+        <div style="position:absolute;top:8px;left:0;right:0;text-align:center;line-height:1.2"><span style="background:rgba(0,0,0,.7);color:#fff;padding:3px 8px;border-radius:5px;font:600 12px sans-serif">Se salvează doar zona luminoasă (verde)</span></div>
+      </div>
+      <img id="sc-prev" style="display:none;max-height:calc(100vh - 90px);max-width:100%"/>
+    </div>
+    <div style="height:80px;display:flex;gap:12px;align-items:center;justify-content:center;background:#111">
+      <button id="sc-cancel" style="padding:10px 18px;font-size:1rem">Anulează</button>
+      <button id="sc-shot" style="padding:10px 26px;font-size:1.05rem;font-weight:700;background:#22c55e;color:#000;border:0;border-radius:8px">📷 Fotografiază</button>
+      <button id="sc-retry" style="display:none;padding:10px 18px;font-size:1rem">Refă</button>
+      <button id="sc-save" style="display:none;padding:10px 22px;font-size:1.05rem;font-weight:700;background:#2563eb;color:#fff;border:0;border-radius:8px">✓ Salvează</button>
+    </div>`;
+  document.body.appendChild(m);
+  const $=id=>m.querySelector('#'+id), video=$('sc-video');
+  video.srcObject=stream;
+  let blob=null;
+  const close=()=>{try{stream.getTracks().forEach(t=>t.stop());}catch(_){}m.remove();};
+  $('sc-cancel').onclick=close;
+  $('sc-shot').onclick=()=>{
+    const vw=video.videoWidth,vh=video.videoHeight; if(!vw) return;
+    const cropW=Math.round(vw*f), cropX=Math.round((vw-cropW)/2);
+    const outH=Math.min(vh,1000), scale=outH/vh, outW=Math.round(cropW*scale);
+    const cvs=document.createElement('canvas');cvs.width=outW;cvs.height=outH;
+    cvs.getContext('2d').drawImage(video,cropX,0,cropW,vh,0,0,outW,outH);
+    cvs.toBlob(b=>{
+      blob=b;$('sc-prev').src=URL.createObjectURL(b);$('sc-prev').style.display='block';
+      $('sc-wrap').style.display='none';
+      $('sc-shot').style.display='none';$('sc-retry').style.display='';$('sc-save').style.display='';
+    },'image/jpeg',.85);
+  };
+  $('sc-retry').onclick=()=>{blob=null;$('sc-prev').style.display='none';$('sc-wrap').style.display='';
+    $('sc-shot').style.display='';$('sc-retry').style.display='none';$('sc-save').style.display='none';};
+  $('sc-save').onclick=async()=>{
+    if(!blob) return; const b=blob; close();
+    await uploadStockPhotoBlob(noteKey,b);
+  };
 }
 
 // Decupează o fâșie ÎNGUSTĂ din centrul pozei (lățime redusă, înălțime completă) —
@@ -5401,7 +5459,7 @@ function triggerStockPhotoUpload(noteKey){
 // Notă: fără reper de calibrare în cadru nu putem ști exact mm/pixel; folosim o fracțiune
 // din lățimea cadrului (≈18%) ca aproximare rezonabilă pentru "~30mm" la o distanță tipică de fotografiere.
 function compressImageToDataUrl(file,maxDim){
-  const CROP_WIDTH_FRACTION=0.18; // ≈ echivalentul benzii de ~30mm lățime
+  const CROP_WIDTH_FRACTION=STOCK_CROP_FRACTION;
   return new Promise((resolve,reject)=>{
     const img=new Image();
     const url=URL.createObjectURL(file);
@@ -5424,13 +5482,16 @@ function compressImageToDataUrl(file,maxDim){
   });
 }
 
-async function uploadStockPhoto(noteKey,file){
+async function uploadStockPhotoBlob(noteKey,blob){
+  return uploadStockPhoto(noteKey,blob,true);
+}
+async function uploadStockPhoto(noteKey,file,alreadyCropped){
   if(!sb||!currentUser){showToast('⚠ Fără conexiune Supabase — poza nu se poate salva','err');return;}
   showToast('Se încarcă poza...','ok',6000);
   try{
-    const dataUrl=await compressImageToDataUrl(file,1000); // înălțime max — fâșie centrală îngustă, fișier mic
-    const res=await fetch(dataUrl);
-    const blob=await res.blob();
+    let blob;
+    if(alreadyCropped) blob=file;
+    else{ const dataUrl=await compressImageToDataUrl(file,1000); blob=await (await fetch(dataUrl)).blob(); }
     const safeName=noteKey.replace(/[^a-zA-Z0-9]/g,'_');
     const path=`stock/${safeName}/${Date.now()}.jpg`;
     const{error:upErr}=await sb.storage.from('stock-photos').upload(path,blob,{contentType:'image/jpeg',upsert:false});
